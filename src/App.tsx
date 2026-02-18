@@ -62,8 +62,8 @@ useEffect(() => {
       <TooltipProvider>
         <Toaster />
         <Sonner />
-        <div className="min-h-screen bg-background overflow-x-hidden">
-          <div className="w-full max-w-md mx-auto px-4 pb-28 min-h-screen">
+        <div className="min-h-screen bg-background overflow-y-auto">
+          <div className="w-full max-w-md mx-auto px-4 pb-28 min-h-screen overflow-y-auto">
 
             <Routes>
               <Route path="/" element={<Navigate to="/login" replace />} />

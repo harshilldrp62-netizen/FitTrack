@@ -1316,7 +1316,7 @@ const WorkoutDetail = ({ workout, onBack, onComplete, isCompleted }: WorkoutDeta
   return (
     <div className="mobile-page">
       {/* Background Effects */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+      <div className="    pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-primary/10 rounded-full blur-3xl" />
       </div>
 
@@ -1367,7 +1367,7 @@ const WorkoutDetail = ({ workout, onBack, onComplete, isCompleted }: WorkoutDeta
               <span className="text-muted-foreground">Progress</span>
               <span className="text-primary font-medium">{Math.round(progress)}%</span>
             </div>
-            <div className="w-full h-2 bg-secondary rounded-full overflow-hidden">
+            <div className="w-full h-2 bg-secondary rounded-full  ">
               <div 
                 className="h-full bg-primary transition-all duration-300" 
                 style={{ width: `${progress}%` }} 

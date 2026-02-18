@@ -134,7 +134,7 @@ const Admin = () => {
             </div>
 
             {/* User Table */}
-            <div className="bg-card rounded-xl border overflow-hidden">
+            <div className="bg-card rounded-xl border  ">
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead className="bg-secondary/50">

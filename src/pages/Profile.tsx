@@ -105,7 +105,7 @@ const Profile = () => {
 
   if (!profile) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center overflow-y-auto">
         <div className="text-center">
           <p className="text-sm text-muted-foreground">Loading profile...</p>
         </div>
@@ -116,7 +116,7 @@ const Profile = () => {
   return (
     <div className="mobile-page">
       {/* Background Effects */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+      <div className="    pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-primary/10 rounded-full blur-3xl" />
       </div>
 

@@ -31,8 +31,8 @@ const ForgotPassword = () => {
 
   if (isSuccess) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center">
-        <div className="fixed inset-0 overflow-hidden pointer-events-none">
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center overflow-y-auto">
+        <div className="    pointer-events-none">
           <div className="absolute -top-40 -right-40 w-80 h-80 bg-primary/20 rounded-full blur-3xl" />
           <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-accent/10 rounded-full blur-3xl" />
         </div>
@@ -57,8 +57,8 @@ const ForgotPassword = () => {
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col overflow-x-hidden">
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+    <div className="min-h-screen bg-background flex flex-col overflow-x-hidden overflow-y-auto">
+      <div className="    pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-primary/20 rounded-full blur-3xl" />
         <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-accent/10 rounded-full blur-3xl" />
       </div>

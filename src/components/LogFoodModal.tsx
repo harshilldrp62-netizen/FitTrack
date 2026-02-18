@@ -77,7 +77,7 @@ const LogFoodModal = ({ isOpen, onClose, mealType, onLogFood }: LogFoodModalProp
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center overflow-hidden">
+    <div className="min-h-screen z-50 flex items-end justify-center ">
       {/* Backdrop */}
       <div 
         className="absolute inset-0 bg-background/80 backdrop-blur-sm"

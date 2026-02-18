@@ -172,7 +172,7 @@ return () => unsubscribe();
   return (
     <div className="mobile-page">
       {/* Background Effects */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+      <div className="    pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-primary/10 rounded-full blur-3xl" />
       </div>
 
@@ -323,7 +323,7 @@ return () => unsubscribe();
         </div>
       </div>
       {selectedDate && (
-  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+  <div className="  bg-black/50 flex items-center justify-center z-50">
     <div className="bg-card rounded-2xl p-4 w-[90%] max-w-md">
       <h2 className="text-lg font-bold mb-4">
         Stats for {selectedDate}

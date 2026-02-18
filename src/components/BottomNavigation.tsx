@@ -25,7 +25,6 @@ const BottomNavigation = () => {
       border-t border-border
       shadow-[0_-4px_16px_rgba(0,0,0,0.08)]
       pb-[env(safe-area-inset-bottom)]
-      overflow-hidden
       "
     >
       <div className="max-w-md mx-auto flex justify-around items-center px-2 py-2">

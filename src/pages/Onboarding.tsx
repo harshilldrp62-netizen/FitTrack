@@ -173,9 +173,9 @@ const Onboarding = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col overflow-x-hidden">
+    <div className="min-h-screen bg-background flex flex-col overflow-x-hidden overflow-y-auto">
       {/* Background Effects */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+      <div className="    pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-primary/20 rounded-full blur-3xl" />
         <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-accent/10 rounded-full blur-3xl" />
       </div>
@@ -186,7 +186,7 @@ const Onboarding = () => {
           <span className="text-sm text-muted-foreground">Step {step} of {totalSteps}</span>
           <span className="text-sm font-medium text-primary">{Math.round((step / totalSteps) * 100)}%</span>
         </div>
-        <div className="h-2 bg-secondary rounded-full overflow-hidden">
+        <div className="h-2 bg-secondary rounded-full  ">
           <div 
             className="h-full bg-primary transition-all duration-500 rounded-full"
             style={{ width: `${(step / totalSteps) * 100}%` }}

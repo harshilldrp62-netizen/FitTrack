@@ -251,7 +251,7 @@ const Nutrition = () => {
         {Object.entries(meals).map(([mealType, meal]) => (
           <div
             key={mealType}
-            className="bg-card rounded-xl border border-border/50 overflow-hidden"
+            className="bg-card rounded-xl border border-border/50  "
           >
             <button
               onClick={() => toggleMeal(mealType)}
