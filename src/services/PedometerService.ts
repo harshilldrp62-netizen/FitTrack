@@ -51,9 +51,6 @@ export default class PedometerService {
           const steps = data?.steps ?? data?.numberOfSteps ?? data?.value ?? 0;
           const stepCount = Number(steps) || 0;
 onUpdate(stepCount);
-if (typeof window !== "undefined") {
-  window.dispatchEvent(new CustomEvent("stepUpdate", { detail: stepCount }));
-}
 
         });
         if (this.plugin.startUpdates) await this.plugin.startUpdates();
@@ -68,9 +65,6 @@ if (typeof window !== "undefined") {
             const steps = data?.numberOfSteps ?? data?.steps ?? data?.value ?? 0;
             const stepCount = Number(steps) || 0;
 onUpdate(stepCount);
-if (typeof window !== "undefined") {
-  window.dispatchEvent(new CustomEvent("stepUpdate", { detail: stepCount }));
-}
 
           },
           (err: any) => {
@@ -87,9 +81,6 @@ if (typeof window !== "undefined") {
             const steps = data?.steps ?? data?.numberOfSteps ?? 0;
             const stepCount = Number(steps) || 0;
 onUpdate(stepCount);
-if (typeof window !== "undefined") {
-  window.dispatchEvent(new CustomEvent("stepUpdate", { detail: stepCount }));
-}
 
           },
           (err: any) => {

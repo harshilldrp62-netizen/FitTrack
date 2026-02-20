@@ -1,15 +1,14 @@
-
 package com.yourname.fitness;
 
+import static androidx.core.content.ContextCompat.startForegroundService;
+
 import android.Manifest;
-import android.content.Context;
 import android.content.pm.PackageManager;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
+import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.core.app.ActivityCompat;
@@ -17,65 +16,66 @@ import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.BridgeActivity;
 
-public class MainActivity extends BridgeActivity implements SensorEventListener {
+public class MainActivity extends BridgeActivity {
 
-    private SensorManager sensorManager;
-    private Sensor stepSensor;
+    private static final String TAG = "MainActivity";
+    private static final int REQ_ACTIVITY_RECOGNITION = 9001;
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(Bundle savedInstanceState) {
+        // Register custom plugin before BridgeActivity initialization.
+        // If registered after super.onCreate, Capacitor may not expose it to JS.
+        registerPlugin(StepPlugin.class);
         super.onCreate(savedInstanceState);
-
-        requestActivityPermission();
-
-        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
-
-        if (sensorManager != null) {
-            stepSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
-
-            if (stepSensor != null) {
-                sensorManager.registerListener(this, stepSensor, SensorManager.SENSOR_DELAY_NORMAL);
-                Log.d("STEP_DEBUG", "Step sensor registered");
-            } else {
-                Log.d("STEP_DEBUG", "Step sensor NOT available");
-            }
-        }
+        Log.d(TAG, "onCreate: bridge activity created");
     }
 
-    private void requestActivityPermission() {
+    @Override
+    public void onStart() {
+        super.onStart();
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION)
-                    != PackageManager.PERMISSION_GRANTED) {
-
+            int granted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION);
+            if (granted != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(
-                        this,
-                        new String[]{Manifest.permission.ACTIVITY_RECOGNITION},
-                        101
+                    this,
+                    new String[]{Manifest.permission.ACTIVITY_RECOGNITION},
+                    REQ_ACTIVITY_RECOGNITION
                 );
+                Log.w(TAG, "onStart: requesting ACTIVITY_RECOGNITION permission");
+                return;
             }
         }
+
+        startStepServiceIfNeeded();
     }
 
-    @Override
-    public void onSensorChanged(SensorEvent event) {
-        if (event.sensor.getType() == Sensor.TYPE_STEP_COUNTER) {
-
-            final int steps = (int) event.values[0];
-
-            Log.d("STEP_DEBUG", "Steps: " + steps);
-
-            runOnUiThread(() -> {
-                if (bridge != null && bridge.getWebView() != null) {
-                    bridge.getWebView().evaluateJavascript(
-                            "window.dispatchEvent(new CustomEvent('stepUpdate', { detail: " + steps + " }));",
-                            null
-                    );
+    private void startStepServiceIfNeeded() {
+        new Handler(Looper.getMainLooper()).post(() -> {
+            Intent serviceIntent = new Intent(this, StepService.class);
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent);
+                } else {
+                    startService(serviceIntent);
                 }
-            });
-        }
+                Log.d(TAG, "onStart: StepService start/refresh requested");
+            } catch (Exception e) {
+                Log.e(TAG, "onStart: failed to start StepService", e);
+            }
+        });
     }
 
     @Override
-    public void onAccuracyChanged(Sensor sensor, int accuracy) {
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+        if (requestCode == REQ_ACTIVITY_RECOGNITION) {
+            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            Log.d(TAG, "onRequestPermissionsResult: ACTIVITY_RECOGNITION granted=" + granted);
+            if (granted) {
+                startStepServiceIfNeeded();
+            }
+        }
     }
 }

@@ -3,9 +3,10 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/firebase";
+import { getNativeSteps } from "@/services/NativeStepService";
 import PedometerService from "@/services/PedometerService";
 import Login from "./pages/Login";
 import ForgotPassword from "./pages/ForgotPassword";
@@ -27,17 +28,54 @@ const queryClient = new QueryClient();
 
 const App = () => {
   const navigate = useNavigate();
-useEffect(() => {
-  const pedometer = new PedometerService();
-  pedometer.start(() => {});
-}, []);
-  useEffect(() => {
-    console.log("[App] 🔍 Setting up auth listener...");
+  const lastStepsRef = useRef(-1);
+  const pedometerRef = useRef<PedometerService | null>(null);
 
+  useEffect(() => {
+    const dispatchSafeSteps = (raw: unknown, source: "native" | "pedometer") => {
+      const safeSteps =
+        Number.isFinite(Number(raw)) && Number(raw) >= 0
+          ? Math.floor(Number(raw))
+          : 0;
+
+      if (safeSteps !== lastStepsRef.current) {
+        lastStepsRef.current = safeSteps;
+        window.dispatchEvent(new CustomEvent("stepUpdate", { detail: safeSteps }));
+      }
+
+      return safeSteps;
+    };
+
+    pedometerRef.current = new PedometerService();
+    pedometerRef.current.start((steps) => {
+      dispatchSafeSteps(steps, "pedometer");
+    }).catch(() => {});
+
+    const poll = async () => {
+      try {
+        // Native plugin returns today's steps (already baseline-adjusted on Android service side).
+        console.log("[App] polling...");
+        const stepsRaw = await getNativeSteps();
+        console.log("[App] raw steps:", stepsRaw);
+        const safeSteps = dispatchSafeSteps(stepsRaw, "native");
+        console.log("[App] safe steps:", safeSteps);
+      } catch (e) {
+        console.error("Step polling error:", e);
+      }
+    };
+
+    poll();
+    const id = setInterval(poll, 2000);
+    return () => {
+      clearInterval(id);
+      pedometerRef.current?.stop().catch(() => {});
+      pedometerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
-        console.log("[App] ✅ User logged in:", user.email);
-
         const pathname = window.location.pathname;
         const isAuthPage =
           pathname === "/" ||
@@ -49,7 +87,6 @@ useEffect(() => {
           navigate("/home", { replace: true });
         }
       } else {
-        console.log("[App] 🚪 User logged out");
         navigate("/login", { replace: true });
       }
     });
@@ -64,14 +101,12 @@ useEffect(() => {
         <Sonner />
         <div className="min-h-screen bg-background overflow-y-auto">
           <div className="w-full max-w-md mx-auto px-4 pb-28 min-h-screen overflow-y-auto">
-
             <Routes>
               <Route path="/" element={<Navigate to="/login" replace />} />
               <Route path="/login" element={<Login />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route path="/signup" element={<SignUp />} />
 
-              {/* Protected routes */}
               <Route
                 path="/onboarding"
                 element={

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { auth } from "@/firebase";
 import DailyMetricsService, { localDateId } from "@/services/DailyMetricsService";
 import { localDateIdFromDate } from "@/services/DailyMetricsService";
+import StepHistoryService from "@/services/StepHistoryService";
 import { 
   ArrowLeft, 
   TrendingUp,
@@ -25,41 +26,46 @@ const Progress = () => {
   const [streakInfo, setStreakInfo] = useState({ streak: 0, longest: 0 });
 
   const dailyMetrics = new DailyMetricsService();
+  const stepHistoryService = new StepHistoryService();
 
   const loadWeeklyData = async () => {
     try {
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
-      const days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-      const result:any[] = [];
+      const firebaseWeek = await stepHistoryService.getWeeklySteps(uid);
+      if (firebaseWeek.length === 7) {
+        setWeeklyData(firebaseWeek.map((d) => ({
+          day: d.day,
+          steps: Number(d.steps) || 0,
+        })));
+        return;
+      }
 
-     const base = new Date(); // freeze today once
-
-for (let i = 6; i >= 0; i--) {
-  const d = new Date(base);
-  d.setDate(base.getDate() - i);
-
-  // use LOCAL date helper
-  const dateId = localDateIdFromDate(d);
-
-  const data = await dailyMetrics.getDailyMetrics(dateId, uid);
-
-  result.push({
-    day: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][6 - i],
-    calories:
-      data?.nutritionTotals?.calories ||
-      data?.caloriesBurned ||
-      0,
-    workout: (data?.workoutMinutes || 0) > 0
-  });
-}
-
-
-
-      setWeeklyData(result);
+      // local fallback with strict 7-day output
+      const localFallback: Array<{ day: string; steps: number }> = [];
+      const base = new Date();
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(base);
+        d.setDate(base.getDate() - i);
+        const dateKey = `steps_total_${d.toDateString()}`;
+        localFallback.push({
+          day: d.toLocaleDateString("en-US", { weekday: "short" }),
+          steps: Number(localStorage.getItem(dateKey) || 0) || 0,
+        });
+      }
+      setWeeklyData(localFallback);
     } catch (e) {
       console.error(e);
+      setWeeklyData([
+        { day: "Mon", steps: 0 },
+        { day: "Tue", steps: 0 },
+        { day: "Wed", steps: 0 },
+        { day: "Thu", steps: 0 },
+        { day: "Fri", steps: 0 },
+        { day: "Sat", steps: 0 },
+        { day: "Sun", steps: 0 },
+      ]);
     }
   };
 const loadStreak = async () => {
@@ -98,13 +104,19 @@ const loadStreak = async () => {
     // wait briefly for Firebase to initialize
     setTimeout(async () => {
       const uid = auth.currentUser?.uid;
-      console.log("UID in Progress:", uid);
-
       if (uid) {
         await loadWeeklyData();
         await loadStreak();
       } else {
-        console.log("User not ready yet");
+        setWeeklyData([
+          { day: "Mon", steps: 0 },
+          { day: "Tue", steps: 0 },
+          { day: "Wed", steps: 0 },
+          { day: "Thu", steps: 0 },
+          { day: "Fri", steps: 0 },
+          { day: "Sat", steps: 0 },
+          { day: "Sun", steps: 0 },
+        ]);
       }
     }, 800);
   };
@@ -227,7 +239,7 @@ return () => unsubscribe();
       {/* Weekly Chart */}
       <div className="relative z-10 mb-6 animate-slide-up" style={{ animationDelay: "0.1s" }}>
         <div className="bg-card rounded-2xl p-4 border border-border/50">
-          <h2 className="mobile-title mb-4">Weekly Calories</h2>
+          <h2 className="mobile-title mb-4">Weekly Steps</h2>
           <div className="h-48">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={weeklyData}>
@@ -241,7 +253,7 @@ return () => unsubscribe();
                     borderRadius: "8px"
                   }} 
                 />
-                <Bar dataKey="calories" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="steps" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

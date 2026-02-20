@@ -21,7 +21,6 @@ import {
   Clock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import LogFoodModal from "@/components/LogFoodModal";
 import StepCard from "@/components/StepCard";
 import BottomNavigation from "@/components/BottomNavigation";
@@ -42,15 +41,33 @@ const Home = () => {
   const { toast } = useToast();
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [steps, setSteps] = useState(0);
-  const [baseSteps, setBaseSteps] = useState(0);
-  const [waterIntake, setWaterIntake] = useState(0);
+  const [steps, setSteps] = useState<number>(() => {
+  const saved = localStorage.getItem("steps_latest");
+  return saved ? Math.floor(Number(saved)) : 0;
+});
+  const [waterIntake, setWaterIntake] = useState<number>(0);
   const [showFoodModal, setShowFoodModal] = useState(false);
-  const [todayCalories, setTodayCalories] = useState(0);
-  const [workoutMinutes, setWorkoutMinutes] = useState(0);
+  const [todayCalories, setTodayCalories] = useState<number>(0);
+  const [workoutMinutes, setWorkoutMinutes] = useState<number>(0);
 
   const waterGoal = 8;
   const dailyMetrics = new DailyMetricsService();
+  const toSafeNumber = (value: unknown): number => {
+    const numeric = Number(value ?? 0);
+    return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+  };
+  useEffect(() => {
+  const interval = setInterval(() => {
+    const latest = localStorage.getItem("steps_latest");
+    const safe = Number.isFinite(Number(latest))
+      ? Math.floor(Number(latest))
+      : 0;
+
+    setSteps(prev => (prev !== safe ? safe : prev));
+  }, 2000);
+
+  return () => clearInterval(interval);
+}, []);
 
   /* -------------------- LOAD USER + DAILY DATA -------------------- */
   useEffect(() => {
@@ -94,38 +111,25 @@ if (lastDate !== today) {
   localStorage.removeItem(`water_${lastDate}`);
 }
 
-
-    const savedBase = localStorage.getItem(`steps_base_${today}`);
-    if (savedBase) {
-      setBaseSteps(parseInt(savedBase));
-    }
-
     // Water: Firebase-first (daily metrics), localStorage fallback
     (async () => {
       try {
         const dateId = localDateId().toString();
         const data = await dailyMetrics.getDailyMetrics(dateId);
-        const firebaseWater = typeof (data as any)?.waterGlasses === "number" ? (data as any).waterGlasses : undefined;
-
-        if (typeof firebaseWater === "number") {
+        const firebaseWater = toSafeNumber((data as any)?.waterGlasses);
+        if (firebaseWater >= 0) {
           setWaterIntake(firebaseWater);
           localStorage.setItem(`water_${today}`, firebaseWater.toString());
-          return;
         }
-       const firebaseWorkout = typeof (data as any)?.workoutMinutes === "number"
-      ? (data as any).workoutMinutes
-      : undefined;
-
-    if (typeof firebaseWorkout === "number") {
-      setWorkoutMinutes(firebaseWorkout);
-    }
+        const firebaseWorkout = toSafeNumber((data as any)?.workoutMinutes);
+        setWorkoutMinutes(Math.floor(firebaseWorkout));
  
       } catch {
         // ignore and fall back to localStorage
       }
 
       const savedWater = localStorage.getItem(`water_${today}`);
-      if (savedWater) setWaterIntake(parseInt(savedWater));
+      if (savedWater) setWaterIntake(Math.floor(toSafeNumber(savedWater)));
     })();
 
     // Load today's calories from meals
@@ -133,10 +137,10 @@ if (lastDate !== today) {
     if (savedMeals) {
       const meals = JSON.parse(savedMeals);
       const totalCalories = Object.values(meals).reduce(
-        (sum: number, meal: any) => sum + (meal.totalCalories || 0),
+        (sum: number, meal: any) => sum + toSafeNumber(meal?.totalCalories),
         0
       ) as number;
-      setTodayCalories(totalCalories);
+      setTodayCalories(Math.floor(toSafeNumber(totalCalories)));
     }
 
     // Load workout minutes
@@ -148,13 +152,8 @@ useEffect(() => {
       const dateId = localDateId().toString();
       const data = await dailyMetrics.getDailyMetrics(dateId);
 
-      if ((data as any)?.workoutMinutes) {
-        setWorkoutMinutes((data as any).workoutMinutes);
-      }
-
-      if ((data as any)?.waterGlasses) {
-        setWaterIntake((data as any).waterGlasses);
-      }
+      setWorkoutMinutes(Math.floor(toSafeNumber((data as any)?.workoutMinutes)));
+      setWaterIntake(Math.floor(toSafeNumber((data as any)?.waterGlasses)));
 
     } catch (e) {
       console.error(e);
@@ -165,33 +164,12 @@ useEffect(() => {
   return () => window.removeEventListener("focus", reloadDailyData);
 }, []);
 
-  /* -------------------- STEP LISTENER FROM ANDROID -------------------- */
-  useEffect(() => {
-    const today = new Date().toDateString();
+  
 
-    const handler = (event: any) => {
-      const totalSteps = event.detail;
 
-      // First launch of the day
-      if (!baseSteps) {
-        setBaseSteps(totalSteps);
-        localStorage.setItem(`steps_base_${today}`, totalSteps.toString());
-      }
 
-      const effectiveBase = baseSteps || totalSteps;
-      const calculated = totalSteps - effectiveBase;
-      const todaySteps = calculated > 0 ? calculated : 0;
 
-      setSteps(todaySteps);
-      localStorage.setItem(`steps_total_${today}`, todaySteps.toString());
-    };
-
-    window.addEventListener("stepUpdate", handler);
-
-    return () => {
-      window.removeEventListener("stepUpdate", handler);
-    };
-  }, [baseSteps]);
+    
 
   /* -------------------- CALCULATE CALORIE GOAL -------------------- */
   const calculateCalorieGoal = () => {
@@ -215,7 +193,7 @@ useEffect(() => {
   /* -------------------- WATER -------------------- */
   const addWater = () => {
     const today = new Date().toDateString();
-    const newIntake = waterIntake + 1;
+    const newIntake = Math.floor(toSafeNumber(waterIntake + 1));
     setWaterIntake(newIntake);
     localStorage.setItem(`water_${today}`, newIntake.toString());
 
@@ -232,7 +210,7 @@ useEffect(() => {
 
   const removeWater = () => {
     const today = new Date().toDateString();
-    const newIntake = Math.max(0, waterIntake - 1);
+    const newIntake = Math.floor(Math.max(0, toSafeNumber(waterIntake - 1)));
     setWaterIntake(newIntake);
     localStorage.setItem(`water_${today}`, newIntake.toString());
 
@@ -241,14 +219,15 @@ useEffect(() => {
   };
 
   /* -------------------- CALCULATE CALORIES BURNED FROM STEPS -------------------- */
-  const caloriesBurned = Math.round(steps * 0.04);
+  const safeSteps = Math.floor(toSafeNumber(steps));
+  const caloriesBurned = Number((safeSteps * 0.04).toFixed(2));
 
   // Sync steps/calories burned to Firestore daily doc (best-effort)
   useEffect(() => {
-    if (steps < 0) return;
-    dailyMetrics.setSteps(steps, caloriesBurned).catch(() => {});
+    if (safeSteps < 0) return;
+    dailyMetrics.setSteps(safeSteps, caloriesBurned).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [steps, caloriesBurned]);
+  }, [safeSteps, caloriesBurned]);
 
   /* -------------------- GREETING -------------------- */
   const getGreeting = () => {
@@ -269,7 +248,7 @@ useEffect(() => {
     meals[mealType] = { items: [], totalCalories: 0 };
   }
 
-  const calories = Math.round(food.calories * quantity);
+  const calories = Math.floor(toSafeNumber(food?.calories) * toSafeNumber(quantity));
 
   meals[mealType].items.push({
     ...food,
@@ -277,46 +256,42 @@ useEffect(() => {
     calories,
   });
 
-  meals[mealType].totalCalories += calories;
+  meals[mealType].totalCalories = toSafeNumber(meals?.[mealType]?.totalCalories) + calories;
 
   localStorage.setItem(`meals_${today}`, JSON.stringify(meals));
-  setTodayCalories(prev => prev + calories);
+  setTodayCalories(prev => Math.floor(toSafeNumber(prev) + calories));
 
   // 🔥 FIREBASE SAVE (FIXED)
   const uid = auth.currentUser?.uid;
 
-  if (!uid) {
-    console.log("No UID — food not saved");
-  } else {
+  if (uid) {
     const dateId = localDateId().toString();
 
     await dailyMetrics.addLoggedFood(
       {
         id: Date.now().toString(),
         mealType,
-        name: food.name,
+        name: String(food?.name ?? "Food"),
         calories,
-        protein: food.protein || 0,
-        carbs: food.carbs || 0,
-        fat: food.fat || 0,
-        quantity
+        protein: toSafeNumber(food?.protein),
+        carbs: toSafeNumber(food?.carbs),
+        fat: toSafeNumber(food?.fat),
+        quantity: toSafeNumber(quantity)
       },
       {
         calories,
-        protein: food.protein || 0,
-        carbs: food.carbs || 0,
-        fat: food.fat || 0
+        protein: toSafeNumber(food?.protein),
+        carbs: toSafeNumber(food?.carbs),
+        fat: toSafeNumber(food?.fat)
       },
       dateId,
       uid
     );
-
-    console.log("Food saved to Firebase");
   }
 
   toast({
     title: "Food logged!",
-    description: `${food.name} added to ${mealType}`,
+    description: `${String(food?.name ?? "Food")} added to ${mealType}`,
   });
 };
 
@@ -354,7 +329,7 @@ useEffect(() => {
               <Flame className="w-4 h-4 text-accent" />
               <p className="text-xs text-muted-foreground">Calories</p>
             </div>
-            <p className="card-number">{todayCalories}</p>
+            <p className="card-number">{Math.floor(toSafeNumber(todayCalories))}</p>
             <p className="text-xs text-muted-foreground">/ {caloriesGoal}</p>
           </div>
           <div className="mobile-card">
@@ -362,8 +337,16 @@ useEffect(() => {
               <Footprints className="w-4 h-4 text-primary" />
               <p className="text-xs text-muted-foreground">Steps</p>
             </div>
-            <p className="card-number">{steps.toLocaleString()}</p>
+            <p className="card-number">{(!isNaN(safeSteps) ? safeSteps : 0).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground">Today</p>
+          </div>
+          <div className="mobile-card">
+            <div className="flex items-center gap-2 mb-1">
+              <Flame className="w-4 h-4 text-orange-500" />
+              <p className="text-xs text-muted-foreground">Calories Burned</p>
+            </div>
+            <p className="card-number">{caloriesBurned.toFixed(2)}</p>
+            <p className="text-xs text-muted-foreground">From steps</p>
           </div>
           <div className="mobile-card">
             <div className="flex items-center gap-2 mb-1">
@@ -371,7 +354,7 @@ useEffect(() => {
               <p className="text-xs text-muted-foreground">Water</p>
             </div>
             <div className="flex items-center justify-between">
-              <p className="card-number">{waterIntake}</p>
+              <p className="card-number">{Math.floor(toSafeNumber(waterIntake))}</p>
               <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
@@ -398,7 +381,7 @@ useEffect(() => {
               <Clock className="w-4 h-4 text-success" />
               <p className="text-xs text-muted-foreground">Workout</p>
             </div>
-            <p className="card-number">{workoutMinutes}</p>
+            <p className="card-number">{Math.floor(toSafeNumber(workoutMinutes))}</p>
             <p className="text-xs text-muted-foreground">minutes</p>
           </div>
         </div>

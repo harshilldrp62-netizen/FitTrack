@@ -77,7 +77,7 @@ const LogFoodModal = ({ isOpen, onClose, mealType, onLogFood }: LogFoodModalProp
   };
 
   return (
-    <div className="min-h-screen z-50 flex items-end justify-center ">
+    <div className="fixed inset-0 z-[9999] flex items-end justify-center ">
       {/* Backdrop */}
       <div 
         className="absolute inset-0 bg-background/80 backdrop-blur-sm"
@@ -85,7 +85,8 @@ const LogFoodModal = ({ isOpen, onClose, mealType, onLogFood }: LogFoodModalProp
       />
       
       {/* Modal */}
-      <div className="relative w-full max-w-md bg-card border border-border rounded-t-3xl max-h-[85vh] flex flex-col animate-slide-up">
+      <div className="relative w-full max-w-md bg-card border border-border rounded-t-3xl h-[85vh] flex flex-col animate-slide-up overflow-hidden">
+
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
           <div className="flex items-center gap-3">
@@ -108,7 +109,7 @@ const LogFoodModal = ({ isOpen, onClose, mealType, onLogFood }: LogFoodModalProp
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto p-4 overscroll-contain">
           {!selectedFood ? (
             <>
               {/* Search */}

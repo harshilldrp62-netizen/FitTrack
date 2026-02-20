@@ -7,23 +7,21 @@ import StepCard from "@/components/StepCard";
 const STEPS_GOAL = 10000;
 
 const Steps = () => {
-  const [steps, setSteps] = useState(0);
-  const [baseSteps, setBaseSteps] = useState(0);
+  const [steps, setSteps] = useState<number>(0);
   const [isTracking, setIsTracking] = useState(false);
   const [connectedDevice, setConnectedDevice] = useState<string | null>(null);
   const [heartRate, setHeartRate] = useState<number | null>(null);
   const [sleepHours, setSleepHours] = useState<number | null>(null);
+  const toSafeNumber = (value: unknown): number => {
+    const numeric = Number(value ?? 0);
+    return Number.isFinite(numeric) && numeric >= 0 ? Math.floor(numeric) : 0;
+  };
 
   useEffect(() => {
     const today = new Date().toDateString();
-    const savedBase = localStorage.getItem(`steps_base_${today}`);
-    if (savedBase) {
-      setBaseSteps(parseInt(savedBase, 10));
-    }
-
     const savedTotal = localStorage.getItem(`steps_total_${today}`);
     if (savedTotal) {
-      setSteps(parseInt(savedTotal, 10));
+      setSteps(toSafeNumber(savedTotal));
     }
 
     // Check if tracking was active
@@ -36,44 +34,27 @@ const Steps = () => {
       setConnectedDevice(device);
       const savedHeartRate = localStorage.getItem("wearableHeartRate");
       const savedSleep = localStorage.getItem("wearableSleepHours");
-      if (savedHeartRate) setHeartRate(parseInt(savedHeartRate, 10));
-      if (savedSleep) setSleepHours(parseFloat(savedSleep));
+      if (savedHeartRate) setHeartRate(toSafeNumber(savedHeartRate));
+      if (savedSleep) setSleepHours(Number(savedSleep) || 0);
     }
   }, []);
 
   useEffect(() => {
-    const today = new Date().toDateString();
-    const handler = (event: any) => {
-      const totalSteps = event.detail ?? 0;
-      let baseForToday = baseSteps;
-
-      if (!baseForToday || baseForToday <= 0) {
-        baseForToday = totalSteps;
-        setBaseSteps(baseForToday);
-        localStorage.setItem(`steps_base_${today}`, baseForToday.toString());
-      }
-
-      const calculated = totalSteps - baseForToday;
-      const todaySteps = calculated > 0 ? calculated : 0;
-      setSteps(todaySteps);
-      localStorage.setItem(`steps_total_${today}`, todaySteps.toString());
+    const sync = () => {
+      const today = new Date().toDateString();
+      const savedTotal = localStorage.getItem(`steps_total_${today}`);
+      setSteps(toSafeNumber(savedTotal));
     };
 
-    window.addEventListener("stepUpdate", handler);
-    return () => window.removeEventListener("stepUpdate", handler);
-  }, [baseSteps]);
+    sync();
+    const id = setInterval(sync, 2000);
+    return () => clearInterval(id);
+  }, []);
 
   const toggleTracking = () => {
     const newState = !isTracking;
     setIsTracking(newState);
     localStorage.setItem("stepTrackingActive", newState.toString());
-    
-    // In a real app, this would start/stop device motion API
-    if (newState) {
-      console.log("Step tracking started");
-    } else {
-      console.log("Step tracking stopped");
-    }
   };
 
   const pairDevice = async () => {
@@ -87,10 +68,12 @@ const Steps = () => {
         localStorage.setItem("connectedWearable", device.name || "Wearable Device");
         
         // Simulate syncing data
-        setHeartRate(Math.floor(Math.random() * 40) + 60); // 60-100 bpm
-        setSleepHours(Math.floor(Math.random() * 3) + 6); // 6-9 hours
-        localStorage.setItem("wearableHeartRate", String(heartRate));
-        localStorage.setItem("wearableSleepHours", String(sleepHours));
+        const nextHeartRate = Math.floor(Math.random() * 40) + 60; // 60-100 bpm
+        const nextSleepHours = Math.floor(Math.random() * 3) + 6; // 6-9 hours
+        setHeartRate(nextHeartRate);
+        setSleepHours(nextSleepHours);
+        localStorage.setItem("wearableHeartRate", String(nextHeartRate));
+        localStorage.setItem("wearableSleepHours", String(nextSleepHours));
       } else {
         alert("Bluetooth not supported in this browser. Use HTTPS or localhost.");
       }
@@ -99,13 +82,16 @@ const Steps = () => {
     }
   };
 
-  const progress = Math.min((steps / STEPS_GOAL) * 100, 100);
+  const safeSteps = Number(steps) || 0;
+  const progressValue = Number.isFinite((safeSteps / STEPS_GOAL) * 100)
+    ? Math.min((safeSteps / STEPS_GOAL) * 100, 100)
+    : 0;
   const circumference = 2 * Math.PI * 90; // radius = 90
-  const strokeDashoffset = circumference - (progress / 100) * circumference;
+  const strokeDashoffset = circumference - (progressValue / 100) * circumference;
 
-  const distanceKm = (steps * 0.0008).toFixed(2); // Approximate: 1 step ≈ 0.8m
-  const caloriesBurned = Math.round(steps * 0.04);
-  const activeMinutes = Math.round(steps / 100); // Rough estimate
+  const distanceKm = (safeSteps * 0.0008).toFixed(2); // Approximate: 1 step ~= 0.8m
+  const caloriesBurned = Number((safeSteps * 0.04).toFixed(2));
+  const activeMinutes = Math.round(safeSteps / 100); // Rough estimate
 
   return (
     <div className="mobile-page">
@@ -157,10 +143,12 @@ const Steps = () => {
               />
             </svg>
             <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <p className="text-5xl font-bold text-foreground">{steps.toLocaleString()}</p>
+              <p className="text-5xl font-bold text-foreground">
+                {!isNaN(safeSteps) ? safeSteps.toLocaleString() : 0}
+              </p>
               <p className="text-base text-muted-foreground">steps</p>
               <p className="text-xs text-muted-foreground mt-2">
-                {Math.round(progress)}% of {STEPS_GOAL.toLocaleString()}
+                {Math.round(progressValue)}% of {STEPS_GOAL.toLocaleString()}
               </p>
             </div>
           </div>
@@ -196,7 +184,7 @@ const Steps = () => {
           </div>
           <div className="mobile-card text-center">
             <p className="text-xs text-muted-foreground mb-1">Calories</p>
-            <p className="card-number">{caloriesBurned}</p>
+            <p className="card-number">{caloriesBurned.toFixed(2)}</p>
           </div>
           <div className="mobile-card text-center">
             <p className="text-xs text-muted-foreground mb-1">Active</p>

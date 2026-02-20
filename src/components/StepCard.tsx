@@ -1,72 +1,112 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { TrendingUp } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import StepHistoryModal from "@/components/StepHistoryModal";
-import StepService from "@/services/StepService";
+import StepHistoryService from "@/services/StepHistoryService";
 import { auth } from "@/firebase";
 import { localDateId } from "@/services/DailyMetricsService";
+import { getNativeSteps } from "@/plugins/steps";
 
-const DAILY_TARGET = 8000; // You can change this
+const DAILY_TARGET = 10000;
+const STEP_LATEST_KEY = "steps_latest";
+const historyService = new StepHistoryService();
 
 const StepCard: React.FC = () => {
-  const [stepsToday, setStepsToday] = useState(0);
-  const [baseSteps, setBaseSteps] = useState<number | null>(null);
+  const [stepCount, setStepCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  const lastSavedFirebaseStepsRef = useRef<number>(-1);
 
+  const getTodayKey = () => new Date().toDateString();
+
+  const toSafeNumber = (value: unknown): number => {
+    const numeric = Number(value ?? 0);
+    return Number.isFinite(numeric) && numeric >= 0 ? Math.floor(numeric) : 0;
+  };
+  const readWeekStore = (): Record<string, number> => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("steps_week") || "{}");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const persistSteps = (value: number) => {
+    const safe = toSafeNumber(value);
+    localStorage.setItem(STEP_LATEST_KEY, safe.toString());
+    localStorage.setItem(`steps_total_${getTodayKey()}`, safe.toString());
+
+    // weekly cache
+    const iso = new Date().toISOString().slice(0, 10);
+    const week = readWeekStore();
+    week[iso] = safe;
+    localStorage.setItem("steps_week", JSON.stringify(week));
+
+    return safe;
+  };
+
+  /* ---------------- INITIAL LOAD ---------------- */
   useEffect(() => {
-    const todayKey = new Date().toDateString();
-    const savedBase = localStorage.getItem(`steps_base_${todayKey}`);
-    const savedTotal = localStorage.getItem(`steps_total_${todayKey}`);
+    const load = async () => {
+      const todayKey = getTodayKey();
+      const saved = toSafeNumber(localStorage.getItem(`steps_total_${todayKey}`));
 
-    if (savedBase) {
-      setBaseSteps(parseInt(savedBase, 10));
-    }
+      // Native plugin returns today's steps (already baseline-adjusted by Android service).
+      const native = await getNativeSteps().catch(() => 0);
+      const safeNative = toSafeNumber(native);
+      const best = Math.max(saved, safeNative);
 
-    if (savedTotal) {
-      setStepsToday(parseInt(savedTotal, 10));
-      setLoading(false);
-    }
+      const safe = persistSteps(best);
+      setStepCount(safe);
 
-    const handler = (event: any) => {
-      const totalSteps: number = event.detail ?? 0;
-      const key = new Date().toDateString();
-      const storedBase = localStorage.getItem(`steps_base_${key}`);
-      let baseForToday = storedBase ? parseInt(storedBase, 10) : null;
-
-      if (baseForToday == null || baseForToday <= 0) {
-        baseForToday = totalSteps;
-        localStorage.setItem(`steps_base_${key}`, baseForToday.toString());
-        setBaseSteps(baseForToday);
+      // Save once on initial load too (important when auth initializes after app boot).
+      const uid = auth.currentUser?.uid;
+      if (uid && safe !== lastSavedFirebaseStepsRef.current) {
+        lastSavedFirebaseStepsRef.current = safe;
+        const dateId = localDateId().toString();
+        historyService.saveSteps(uid, dateId, safe).catch(() => {});
       }
 
-      const calculated = totalSteps - baseForToday;
-      const todaySteps = calculated > 0 ? calculated : 0;
-      setStepsToday(todaySteps);
-      const service = new StepService();
-const uid = auth.currentUser?.uid;
-const dateId = localDateId().toString();
-
-if (uid) {
-  service.saveDay(uid, dateId, todaySteps).catch(() => {});
-}
-      localStorage.setItem(`steps_total_${key}`, todaySteps.toString());
       setLoading(false);
+    };
+
+    load();
+  }, []);
+
+  /* ---------------- LIVE UPDATES ---------------- */
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const safe = persistSteps(toSafeNumber((event as CustomEvent).detail));
+      setStepCount(safe);
+
+      const uid = auth.currentUser?.uid;
+      if (uid && safe !== lastSavedFirebaseStepsRef.current) {
+        lastSavedFirebaseStepsRef.current = safe;
+        const dateId = localDateId().toString();
+        // Single merge write into users/{uid}/steps/{YYYY-MM-DD} to avoid duplicates.
+        historyService.saveSteps(uid, dateId, safe).catch(() => {});
+      }
     };
 
     window.addEventListener("stepUpdate", handler);
-
-    return () => {
-      window.removeEventListener("stepUpdate", handler);
-    };
+    return () => window.removeEventListener("stepUpdate", handler);
   }, []);
 
-  const progress = Math.min((stepsToday / DAILY_TARGET) * 100, 100);
+  /* ---------------- SAFE PROGRESS ---------------- */
+  const safeSteps = Number.isFinite(Number(stepCount))
+    ? toSafeNumber(stepCount)
+    : 0;
+
+  const progressValue = Number.isFinite((safeSteps / DAILY_TARGET) * 100)
+    ? Math.min((safeSteps / DAILY_TARGET) * 100, 100)
+    : 0;
+  const caloriesBurned = Number((safeSteps * 0.04).toFixed(2));
 
   const message =
     DAILY_TARGET <= 7000
-      ? "Balanced goal for your routine ⚡"
-      : "Keep pushing 💪";
+      ? "Balanced goal for your routine"
+      : "Keep pushing";
 
   return (
     <>
@@ -79,7 +119,7 @@ if (uid) {
             <div>
               <p className="card-label">Steps Today</p>
               <p className="card-number">
-                {loading ? "--" : stepsToday}
+                {loading ? "--" : (!isNaN(safeSteps) ? safeSteps : 0)}
                 <span className="text-muted-foreground text-xs font-normal">
                   {" "}
                   / {DAILY_TARGET}
@@ -91,13 +131,16 @@ if (uid) {
           <div className="text-right">
             <p className="card-label">Progress</p>
             <p className="text-2xl font-bold text-primary">
-              {loading ? "--" : `${Math.round(progress)}%`}
+              {loading ? "--" : `${Math.round(progressValue)}%`}
             </p>
           </div>
         </div>
 
-        <Progress value={loading ? 0 : progress} className="h-3 bg-secondary" />
-        <p className="text-sm text-muted-foreground mt-3">{message}</p>
+        <Progress value={loading ? 0 : progressValue} className="h-3 bg-secondary" />
+
+        <p className="text-sm text-muted-foreground mt-3">
+          {message} - {caloriesBurned.toFixed(2)} kcal
+        </p>
       </div>
 
       <StepHistoryModal open={open} onClose={() => setOpen(false)} />
