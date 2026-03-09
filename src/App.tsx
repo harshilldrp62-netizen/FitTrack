@@ -2,12 +2,14 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
-import { useEffect, useRef } from "react";
-import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "@/firebase";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { onAuthStateChanged, type User } from "firebase/auth";
+import { auth, authReady } from "@/firebase";
 import { getNativeSteps } from "@/services/NativeStepService";
 import PedometerService from "@/services/PedometerService";
+import { Capacitor } from "@capacitor/core";
+import { syncNativeReminders } from "@/services/NativeStepService";
 import Login from "./pages/Login";
 import ForgotPassword from "./pages/ForgotPassword";
 import Onboarding from "./pages/Onboarding";
@@ -27,9 +29,29 @@ import ProtectedRoute from "./components/ProtectedRoute";
 const queryClient = new QueryClient();
 
 const App = () => {
-  const navigate = useNavigate();
   const lastStepsRef = useRef(-1);
   const pedometerRef = useRef<PedometerService | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | null = null;
+    void authReady.finally(() => {
+      const existingUser = auth.currentUser;
+      if (existingUser) {
+        setUser(existingUser);
+        setAuthLoading(false);
+      }
+
+      unsubscribe = onAuthStateChanged(auth, (nextUser) => {
+        setUser(nextUser);
+        setAuthLoading(false);
+      });
+    });
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     const dispatchSafeSteps = (raw: unknown, source: "native" | "pedometer") => {
@@ -74,25 +96,40 @@ const App = () => {
   }, []);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        const pathname = window.location.pathname;
-        const isAuthPage =
-          pathname === "/" ||
-          pathname === "/login" ||
-          pathname === "/signup" ||
-          pathname === "/forgot-password";
+    const syncReminderSchedulesAtStartup = async () => {
+      if (!Capacitor.isNativePlatform()) return;
 
-        if (isAuthPage) {
-          navigate("/home", { replace: true });
-        }
-      } else {
-        navigate("/login", { replace: true });
+      try {
+        const enabledRaw = localStorage.getItem("notificationsEnabled");
+        const notificationsEnabled = enabledRaw === null ? true : enabledRaw === "true";
+        type Reminder = { id: string; enabled: boolean; time: string };
+        const rawReminders = localStorage.getItem("reminders");
+        const reminders: Reminder[] = rawReminders ? JSON.parse(rawReminders) : [];
+
+        const rawWorkout = localStorage.getItem("customWorkoutReminder");
+        const workout = rawWorkout ? JSON.parse(rawWorkout) : null;
+        await syncNativeReminders(
+          notificationsEnabled,
+          reminders,
+          workout?.enabled && typeof workout.time === "string"
+            ? { enabled: true, time: workout.time }
+            : { enabled: false, time: "18:00" }
+        );
+      } catch (err) {
+        console.warn("Startup reminder sync failed:", err);
       }
-    });
+    };
 
-    return () => unsubscribe();
-  }, [navigate]);
+    syncReminderSchedulesAtStartup();
+  }, []);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -102,15 +139,15 @@ const App = () => {
         <div className="min-h-screen bg-background overflow-y-auto">
           <div className="w-full max-w-md mx-auto px-4 pb-28 min-h-screen overflow-y-auto">
             <Routes>
-              <Route path="/" element={<Navigate to="/login" replace />} />
-              <Route path="/login" element={<Login />} />
+              <Route path="/" element={<Navigate to={user ? "/home" : "/login"} replace />} />
+              <Route path="/login" element={user ? <Navigate to="/home" replace /> : <Login />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
-              <Route path="/signup" element={<SignUp />} />
+              <Route path="/signup" element={user ? <Navigate to="/home" replace /> : <SignUp />} />
 
               <Route
                 path="/onboarding"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute user={user} authLoading={authLoading}>
                     <Onboarding />
                   </ProtectedRoute>
                 }
@@ -118,7 +155,7 @@ const App = () => {
               <Route
                 path="/home"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute user={user} authLoading={authLoading}>
                     <Home />
                   </ProtectedRoute>
                 }
@@ -126,7 +163,7 @@ const App = () => {
               <Route
                 path="/profile"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute user={user} authLoading={authLoading}>
                     <Profile />
                   </ProtectedRoute>
                 }
@@ -134,7 +171,7 @@ const App = () => {
               <Route
                 path="/nutrition"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute user={user} authLoading={authLoading}>
                     <Nutrition />
                   </ProtectedRoute>
                 }
@@ -142,7 +179,7 @@ const App = () => {
               <Route
                 path="/workouts"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute user={user} authLoading={authLoading}>
                     <Workouts />
                   </ProtectedRoute>
                 }
@@ -150,7 +187,7 @@ const App = () => {
               <Route
                 path="/progress"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute user={user} authLoading={authLoading}>
                     <Progress />
                   </ProtectedRoute>
                 }
@@ -158,7 +195,7 @@ const App = () => {
               <Route
                 path="/steps"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute user={user} authLoading={authLoading}>
                     <Steps />
                   </ProtectedRoute>
                 }
@@ -166,7 +203,7 @@ const App = () => {
               <Route
                 path="/reminders"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute user={user} authLoading={authLoading}>
                     <Reminders />
                   </ProtectedRoute>
                 }
@@ -174,7 +211,7 @@ const App = () => {
               <Route
                 path="/settings"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute user={user} authLoading={authLoading}>
                     <Settings />
                   </ProtectedRoute>
                 }
@@ -182,7 +219,7 @@ const App = () => {
               <Route
                 path="/admin"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute user={user} authLoading={authLoading}>
                     <Admin />
                   </ProtectedRoute>
                 }

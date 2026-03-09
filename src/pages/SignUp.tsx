@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { FirebaseError } from "firebase/app";
+import { createUserWithEmailAndPassword, sendEmailVerification, signOut } from "firebase/auth";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "@/firebase";
 import { Button } from "@/components/ui/button";
@@ -35,22 +36,34 @@ const Signup = () => {
         {
           uid: cred.user.uid,
           email: cred.user.email,
+          profileCompleted: false,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         },
         { merge: true }
       );
 
-      toast({ title: "Account created", description: "Welcome! Please complete onboarding." });
+      await sendEmailVerification(cred.user);
+      await signOut(auth);
 
-      // Navigate to onboarding (match other routes casing)
-      navigate("/onboarding");
-    } catch (err: any) {
+      toast({
+        title: "Verification email sent",
+        description: "Verification email sent. Please verify your email before logging in.",
+      });
+      navigate("/login");
+    } catch (err: unknown) {
       console.error("Signup error:", err);
-      if (err.code === "auth/email-already-in-use") {
+      const code = err instanceof FirebaseError ? err.code : "";
+      if (code === "auth/email-already-in-use") {
         toast({ title: "Email already in use", description: "Try logging in.", variant: "destructive" });
+      } else if (code === "auth/invalid-email") {
+        toast({ title: "Invalid email", description: "Please enter a valid email address.", variant: "destructive" });
       } else {
-        toast({ title: "Sign up failed", description: err.message || "An error occurred.", variant: "destructive" });
+        toast({
+          title: "Sign up failed",
+          description: err instanceof Error ? err.message : "An error occurred.",
+          variant: "destructive",
+        });
       }
     } finally {
       setIsLoading(false);

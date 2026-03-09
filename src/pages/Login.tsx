@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Mail, Lock, Eye, EyeOff, Dumbbell, ArrowRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { FirebaseError } from "firebase/app";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { auth } from "@/firebase";
 
 const Login = () => {
@@ -23,7 +24,18 @@ const Login = () => {
     setIsLoading(true);
 
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      const cred = await signInWithEmailAndPassword(auth, email, password);
+      await cred.user.reload();
+
+      if (!cred.user.emailVerified) {
+        await signOut(auth);
+        toast({
+          title: "Email not verified",
+          description: "Please verify your email before logging in.",
+          variant: "destructive",
+        });
+        return;
+      }
 
       toast({
         title: "Welcome!",
@@ -31,15 +43,36 @@ const Login = () => {
       });
 
       navigate("/home");
-    } catch (error) {
-      toast({
-        title: "Login Failed",
-        description: "Invalid email or password.",
-        variant: "destructive",
-      });
+    } catch (error: unknown) {
+      const code = error instanceof FirebaseError ? error.code : "";
+      if (code === "auth/invalid-email") {
+        toast({
+          title: "Invalid email",
+          description: "Invalid email address.",
+          variant: "destructive",
+        });
+      } else if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
+        toast({
+          title: "Login Failed",
+          description: "Wrong password.",
+          variant: "destructive",
+        });
+      } else if (code === "auth/user-not-found") {
+        toast({
+          title: "Login Failed",
+          description: "User not found.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Login Failed",
+          description: "Invalid email or password.",
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   return (

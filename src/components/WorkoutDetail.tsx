@@ -1,9 +1,17 @@
-import { useState,useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { ArrowLeft, Clock, Flame, Dumbbell, Play, Check, Info, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import DailyMetricsService, { localDateId } from  "@/services/DailyMetricsService";
-import { db,auth } from "@/firebase";
-import { doc, setDoc, serverTimestamp} from "firebase/firestore";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import DailyMetricsService, { localDateId } from "@/services/DailyMetricsService";
+import { db, auth } from "@/firebase";
+import { collection, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 interface Exercise {
   id: string;
   name: string;
@@ -26,10 +34,15 @@ interface WorkoutDetailProps {
     difficulty: string;
     type: string;
   };
+  canStartTraining: boolean;
   onBack: () => void;
   onComplete: () => void;
   isCompleted: boolean;
 }
+
+type ExerciseGoalTag = "muscle" | "fat_loss" | "weight_gain" | "endurance";
+type IntensityLevel = "low" | "moderate" | "high";
+type ConfirmDialogType = "start" | "reset" | "complete" | "finish" | null;
 
 const exerciseDatabase: Record<string, Exercise[]> = {
   "Upper Body Power": [
@@ -1276,32 +1289,518 @@ const exerciseDatabase: Record<string, Exercise[]> = {
   ]
 };
 
-const WorkoutDetail = ({ workout, onBack, onComplete, isCompleted }: WorkoutDetailProps) => {
-  const [completedExercises, setCompletedExercises] = useState<string[]>([]);
-  const [expandedExercise, setExpandedExercise] = useState<string | null>(null);
-  const [startTime, setStartTime] = useState<number | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-  const [isStarted, setIsStarted] = useState(false);
+const toGoalTag = (goal: string): ExerciseGoalTag => {
+  const normalizedGoal = goal.trim().toLowerCase();
+  if (normalizedGoal === "build" || normalizedGoal === "build muscle") return "muscle";
+  if (normalizedGoal === "lose" || normalizedGoal === "lose weight") return "fat_loss";
+  if (normalizedGoal === "gain" || normalizedGoal === "gain weight" || normalizedGoal === "weight_gain") return "weight_gain";
+  if (normalizedGoal === "endurance" || normalizedGoal === "improve endurance") return "endurance";
+  return "muscle";
+};
 
+const resolveIntensityLevel = (weeklyHoursRaw: string, hasHecticSchedule: boolean): IntensityLevel => {
+  if (hasHecticSchedule) return "low";
+
+  const value = (weeklyHoursRaw || "").toString().trim().toLowerCase();
+  if (!value) return "low";
+
+  if (value.includes("+")) return "high";
+
+  const rangeMatch = value.match(/(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)/);
+  if (rangeMatch) {
+    const lower = Number(rangeMatch[1]);
+    const upper = Number(rangeMatch[2]);
+    if (upper <= 3) return "low";
+    if (lower >= 5) return "high";
+    return "moderate";
+  }
+
+  const numericHours = Number(value);
+  if (Number.isFinite(numericHours)) {
+    if (numericHours <= 3) return "low";
+    if (numericHours <= 5) return "moderate";
+    return "high";
+  }
+
+  return "low";
+};
+
+const getTargetExerciseCount = (intensity: IntensityLevel): number => {
+  if (intensity === "low") return 5;
+  if (intensity === "moderate") return 7;
+  return 10;
+};
+
+const getExerciseGoalTag = (exercise: Exercise): ExerciseGoalTag => {
+  const text = `${exercise.name} ${exercise.muscleGroup}`.toLowerCase();
+
+  if (/run|jog|sprint|cycling|bike|swim|rowing|jump rope|high knees|jumping jacks|mountain climbers|burpees|battle ropes|cardio/.test(text)) {
+    return "fat_loss";
+  }
+  if (/plank|tempo|interval|distance|endurance|core/.test(text)) {
+    return "endurance";
+  }
+  if (/barbell|bench|deadlift|squat|press|thrust|weighted|power/.test(text)) {
+    return "weight_gain";
+  }
+  return "muscle";
+};
+
+const WorkoutDetail = ({ workout, canStartTraining, onBack, onComplete, isCompleted }: WorkoutDetailProps) => {
+  const [checkedExerciseIds, setCheckedExerciseIds] = useState<string[]>([]);
+  const [expandedExercise, setExpandedExercise] = useState<string | null>(null);
+  const [status, setStatus] = useState<"idle" | "inProgress" | "completed">("idle");
+  const [isWorkoutStarted, setIsWorkoutStarted] = useState(false);
+  const [isWorkoutCompleted, setIsWorkoutCompleted] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
+  const [completedExercises, setCompletedExercises] = useState<number>(0);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const intervalRef = useRef<number | null>(null);
+  const persistedCompletionRef = useRef(false);
+  const workoutStateHydratedRef = useRef(false);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogType>(null);
+  const [pendingLastExerciseId, setPendingLastExerciseId] = useState<string | null>(null);
   const dailyMetrics = new DailyMetricsService();
-  useEffect(() => {
-    const saved = localStorage.getItem("workout_start");
-    if (saved){ setStartTime(parseInt(saved));
-      setIsStarted(true);
+
+  const profile = useMemo(() => {
+    try {
+      const raw = localStorage.getItem("userProfile");
+      if (!raw) return { weeklyHours: "", hasHecticSchedule: false, goal: "build" };
+      const parsed = JSON.parse(raw) as {
+        weeklyHours?: string | number;
+        hasHecticSchedule?: boolean;
+        goal?: string;
+      };
+      return {
+        weeklyHours: String(parsed.weeklyHours ?? ""),
+        hasHecticSchedule: Boolean(parsed.hasHecticSchedule),
+        goal: String(parsed.goal ?? "build"),
+      };
+    } catch {
+      return { weeklyHours: "", hasHecticSchedule: false, goal: "build" };
     }
   }, []);
-  const exercises = exerciseDatabase[workout.name] || [];
 
-  const toggleExercise = (exerciseId: string) => {
-    setCompletedExercises(prev =>
-      prev.includes(exerciseId)
-        ? prev.filter(id => id !== exerciseId)
-        : [...prev, exerciseId]
+  const exercises = useMemo(() => {
+    const fullExercises = exerciseDatabase[workout.name] || [];
+    const intensityLevel = resolveIntensityLevel(profile.weeklyHours, profile.hasHecticSchedule);
+    const targetCount = getTargetExerciseCount(intensityLevel);
+    const prioritizedTag = toGoalTag(profile.goal);
+
+    const matching = fullExercises.filter((exercise) => getExerciseGoalTag(exercise) === prioritizedTag);
+    const remaining = fullExercises.filter((exercise) => getExerciseGoalTag(exercise) !== prioritizedTag);
+    const personalized = [...matching, ...remaining];
+
+    return personalized.slice(0, Math.min(targetCount, personalized.length));
+  }, [workout.name, profile.weeklyHours, profile.hasHecticSchedule, profile.goal]);
+
+  const visibleExerciseIds = useMemo(() => new Set(exercises.map((exercise) => exercise.id)), [exercises]);
+  const totalExercises = exercises.length;
+  const todayKey = localDateId().toString();
+  const storageKey = `workout_${todayKey}_${workout.id}`;
+
+  const formatTime = (seconds: number) => {
+    const mm = Math.floor(seconds / 60).toString().padStart(2, "0");
+    const ss = (seconds % 60).toString().padStart(2, "0");
+    return `${mm}:${ss}`;
+  };
+  const getWorkoutDocRef = (uid: string, dateId: string) => doc(db, "users", uid, "workouts", dateId);
+
+  const persistCompletedWorkout = async (duration: number) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid || persistedCompletionRef.current) return;
+    persistedCompletionRef.current = true;
+
+    const dateId = localDateId().toString();
+    const safeDuration = Math.max(0, Number(duration) || 0);
+
+    // Store each workout under users/{uid}/workouts/{dateId}/items/{workoutId}
+    const workoutRef = doc(collection(db, "users", uid, "workouts", dateId, "items"), workout.id);
+    await setDoc(
+      workoutRef,
+      {
+        workoutId: workout.id,
+        name: workout.name,
+        durationSeconds: safeDuration,
+        completed: true,
+        completedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    await dailyMetrics.setWorkoutCompletion(safeDuration, true, dateId, uid);
+    await setDoc(
+      getWorkoutDocRef(uid, dateId),
+      {
+        workoutId: workout.id,
+        workoutStarted: false,
+        workoutCompleted: true,
+        startTime: startedAt ?? null,
+        workoutMinutes: Math.max(0, Math.floor(safeDuration / 60)),
+        completedExercises: checkedExerciseIds,
+        lastUpdated: serverTimestamp(),
+      },
+      { merge: true }
     );
   };
 
+  const persistResetWorkout = async () => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    const dateId = localDateId().toString();
+    const workoutRef = doc(collection(db, "users", uid, "workouts", dateId, "items"), workout.id);
+    await setDoc(
+      workoutRef,
+      {
+        workoutId: workout.id,
+        name: workout.name,
+        durationSeconds: 0,
+        completed: false,
+        resetAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    await setDoc(
+      getWorkoutDocRef(uid, dateId),
+      {
+        workoutId: workout.id,
+        workoutStarted: false,
+        workoutCompleted: false,
+        startTime: null,
+        workoutMinutes: 0,
+        completedExercises: [],
+        lastUpdated: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    await dailyMetrics.setWorkoutCompletion(0, false, dateId, uid);
+  };
+
+  const completeWorkout = async () => {
+    if (status === "completed") return;
+    const finalElapsed =
+      status === "inProgress" && typeof startedAt === "number"
+        ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+        : Math.max(0, Number(elapsedSeconds) || 0);
+    setElapsedSeconds(finalElapsed);
+    setStatus("completed");
+    setIsWorkoutCompleted(true);
+    onComplete();
+    await persistCompletedWorkout(finalElapsed);
+  };
+
+  const startWorkout = () => {
+    if (status !== "idle") return;
+    setStartedAt(Date.now());
+    setStatus("inProgress");
+    setIsWorkoutStarted(true);
+    setIsWorkoutCompleted(false);
+  };
+
+  const resetWorkout = () => {
+    localStorage.removeItem(storageKey);
+    setCheckedExerciseIds([]);
+    setCompletedExercises(0);
+    setElapsedSeconds(0);
+    setStartedAt(null);
+    setStatus("idle");
+    setIsWorkoutStarted(false);
+    setIsWorkoutCompleted(false);
+    persistedCompletionRef.current = false;
+    void persistResetWorkout();
+  };
+
+  const handleStartWorkoutPress = () => {
+    setConfirmDialog("start");
+  };
+
+  const handleResetWorkoutPress = () => {
+    setConfirmDialog("reset");
+  };
+
+  const handleCompleteWorkoutPress = () => {
+    if (!canStartTraining) return;
+    setConfirmDialog("complete");
+  };
+
+  useEffect(() => {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return;
+
+    try {
+      const parsed = JSON.parse(raw) as {
+        status?: "idle" | "inProgress" | "completed";
+        elapsedSeconds?: number;
+        completedExercises?: number;
+        startedAt?: number | null;
+        checkedExerciseIds?: string[];
+      };
+
+      const safeStatus =
+        parsed.status === "inProgress" || parsed.status === "completed" ? parsed.status : "idle";
+      const safeStartedAt = typeof parsed.startedAt === "number" ? parsed.startedAt : null;
+      const savedElapsed = Math.max(0, Number(parsed.elapsedSeconds) || 0);
+      const restoredElapsed =
+        safeStatus === "inProgress" && safeStartedAt
+          ? Math.max(savedElapsed, Math.floor((Date.now() - safeStartedAt) / 1000))
+          : savedElapsed;
+      const safeCheckedIds = Array.isArray(parsed.checkedExerciseIds)
+        ? parsed.checkedExerciseIds.filter((id) => typeof id === "string" && visibleExerciseIds.has(id))
+        : [];
+      const safeCompletedExercises = Math.min(
+        totalExercises,
+        Math.max(0, Number(parsed.completedExercises) || safeCheckedIds.length)
+      );
+
+      setStatus(safeStatus);
+      setIsWorkoutStarted(safeStatus === "inProgress" || safeStatus === "completed");
+      setIsWorkoutCompleted(safeStatus === "completed");
+      setStartedAt(safeStartedAt);
+      setElapsedSeconds(restoredElapsed);
+      setCheckedExerciseIds(safeCheckedIds);
+      setCompletedExercises(safeCompletedExercises);
+      persistedCompletionRef.current = safeStatus === "completed";
+    } catch {
+      localStorage.removeItem(storageKey);
+    }
+  }, [storageKey, totalExercises, visibleExerciseIds]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const restoreFromFirestore = async () => {
+      const uid = auth.currentUser?.uid;
+      if (!uid) {
+        workoutStateHydratedRef.current = true;
+        return;
+      }
+
+      try {
+        const dateId = localDateId().toString();
+        const snap = await getDoc(getWorkoutDocRef(uid, dateId));
+        if (!snap.exists()) {
+          if (cancelled) return;
+          setCheckedExerciseIds([]);
+          setCompletedExercises(0);
+          setElapsedSeconds(0);
+          setStatus("idle");
+          setIsWorkoutStarted(false);
+          setIsWorkoutCompleted(false);
+          console.debug("AppState", "No workout doc for today. Using defaults.");
+          return;
+        }
+
+        const data = snap.data() as Record<string, any>;
+        const docWorkoutId = typeof data?.workoutId === "string" ? data.workoutId : "";
+        if (docWorkoutId && docWorkoutId !== workout.id) {
+          return;
+        }
+
+        const restoredChecked = Array.isArray(data?.completedExercises)
+          ? (data.completedExercises as unknown[]).filter((id) => typeof id === "string" && visibleExerciseIds.has(id as string)) as string[]
+          : [];
+        const restoredMinutes = Math.max(0, Number(data?.workoutMinutes ?? 0) || 0);
+        const restoredStartTime = typeof data?.startTime === "number" ? Math.max(0, Math.floor(data.startTime)) : null;
+        const restoredWorkoutStarted = Boolean(data?.workoutStarted ?? false);
+        const computedElapsedFromStart = restoredWorkoutStarted && typeof restoredStartTime === "number"
+          ? Math.max(0, Math.floor((Date.now() - restoredStartTime) / 1000))
+          : 0;
+        const restoredSeconds = Math.max(Math.floor(restoredMinutes * 60), computedElapsedFromStart);
+        const restoredCompleted = Boolean(data?.workoutCompleted ?? false);
+
+        if (cancelled) return;
+        setCheckedExerciseIds(restoredChecked);
+        setCompletedExercises(Math.min(totalExercises, restoredChecked.length));
+        setElapsedSeconds(restoredSeconds);
+        setStartedAt(restoredWorkoutStarted ? restoredStartTime : null);
+        setIsWorkoutCompleted(restoredCompleted);
+        setIsWorkoutStarted(restoredWorkoutStarted || restoredCompleted || restoredChecked.length > 0 || restoredSeconds > 0);
+        setStatus(restoredCompleted ? "completed" : (restoredWorkoutStarted || restoredChecked.length > 0 || restoredSeconds > 0 ? "inProgress" : "idle"));
+        persistedCompletionRef.current = restoredCompleted;
+        console.debug("AppState", `Workout minutes restored: ${restoredMinutes}`);
+        console.debug("AppState", `Exercises restored: ${restoredChecked.length}`);
+        console.debug("AppState", `Workout completion restored: ${restoredCompleted}`);
+      } catch (error) {
+        console.error("AppState", "Failed to restore workout state", error);
+      } finally {
+        workoutStateHydratedRef.current = true;
+      }
+    };
+
+    void restoreFromFirestore();
+    return () => {
+      cancelled = true;
+    };
+  }, [workout.id, totalExercises, visibleExerciseIds]);
+
+  useEffect(() => {
+    const payload = {
+      status,
+      elapsedSeconds: Math.max(0, Number(elapsedSeconds) || 0),
+      completedExercises: Math.max(0, Number(completedExercises) || 0),
+      startedAt,
+      checkedExerciseIds,
+    };
+    localStorage.setItem(storageKey, JSON.stringify(payload));
+  }, [status, elapsedSeconds, completedExercises, startedAt, checkedExerciseIds, storageKey]);
+
+  useEffect(() => {
+    if (!workoutStateHydratedRef.current) return;
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    const dateId = localDateId().toString();
+    const effectiveElapsedSeconds =
+      status === "inProgress" && typeof startedAt === "number"
+        ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+        : Math.max(0, Number(elapsedSeconds) || 0);
+    const safeWorkoutMinutes = Math.max(0, Math.floor(effectiveElapsedSeconds / 60));
+    const workoutStarted = status === "inProgress";
+    const workoutCompleted = status === "completed" || isWorkoutCompleted;
+
+    setDoc(
+      getWorkoutDocRef(uid, dateId),
+      {
+        workoutId: workout.id,
+        workoutStarted,
+        startTime: workoutStarted ? startedAt : null,
+        workoutCompleted,
+        workoutMinutes: safeWorkoutMinutes,
+        completedExercises: checkedExerciseIds,
+        lastUpdated: serverTimestamp(),
+      },
+      { merge: true }
+    ).catch((error) => {
+      console.error("WorkoutDebug", "Failed to save workout state", error);
+    });
+  }, [status, startedAt, isWorkoutCompleted, elapsedSeconds, checkedExerciseIds, workout.id]);
+
+  useEffect(() => {
+    if (intervalRef.current !== null) {
+      window.clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (status !== "inProgress" || typeof startedAt !== "number") return;
+
+    const syncElapsedFromStart = () => {
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    };
+    syncElapsedFromStart();
+    intervalRef.current = window.setInterval(syncElapsedFromStart, 1000);
+
+    return () => {
+      if (intervalRef.current !== null) {
+        window.clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [status, startedAt]);
+
+  useEffect(() => {
+    const syncElapsedOnReturn = () => {
+      if (status !== "inProgress" || typeof startedAt !== "number") return;
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    };
+    window.addEventListener("focus", syncElapsedOnReturn);
+    document.addEventListener("visibilitychange", syncElapsedOnReturn);
+    return () => {
+      window.removeEventListener("focus", syncElapsedOnReturn);
+      document.removeEventListener("visibilitychange", syncElapsedOnReturn);
+    };
+  }, [status, startedAt]);
+
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current !== null) {
+        window.clearInterval(intervalRef.current);
+      }
+    };
+  }, []);
+
+  const toggleExercise = (exerciseId: string) => {
+    if (!canStartTraining) return;
+    if (!isWorkoutStarted || isWorkoutCompleted) return;
+    setCheckedExerciseIds((prev) => {
+      const isAlreadyChecked = prev.includes(exerciseId);
+      const next = isAlreadyChecked ? prev.filter((id) => id !== exerciseId) : [...prev, exerciseId];
+      if (!isAlreadyChecked && status === "inProgress" && totalExercises > 0 && next.length === totalExercises) {
+        setPendingLastExerciseId(exerciseId);
+        setConfirmDialog("finish");
+      }
+      setCompletedExercises(next.length);
+      return next;
+    });
+  };
+
+  const canInteractWithExercises = canStartTraining && isWorkoutStarted && !isWorkoutCompleted;
+
+  const handleConfirmAction = () => {
+    const action = confirmDialog;
+    setPendingLastExerciseId(null);
+    setConfirmDialog(null);
+    if (action === "start") {
+      startWorkout();
+      return;
+    }
+    if (action === "reset") {
+      resetWorkout();
+      return;
+    }
+    if (action === "complete" || action === "finish") {
+      void completeWorkout();
+      return;
+    }
+  };
+
+  const handleCancelDialog = () => {
+    if (confirmDialog === "finish" && pendingLastExerciseId) {
+      setCheckedExerciseIds((prev) => {
+        const next = prev.filter((id) => id !== pendingLastExerciseId);
+        setCompletedExercises(next.length);
+        return next;
+      });
+    }
+    setPendingLastExerciseId(null);
+    setConfirmDialog(null);
+  };
+
+  const getDialogContent = () => {
+    switch (confirmDialog) {
+      case "start":
+        return {
+          title: "Start Workout",
+          message: "Are you sure you want to start this workout?",
+          confirmLabel: "Yes",
+        };
+      case "reset":
+        return {
+          title: "Reset Workout",
+          message: "Are you sure you want to reset this workout? All progress will be lost.",
+          confirmLabel: "Yes",
+        };
+      case "complete":
+        return {
+          title: "Complete Workout",
+          message: "Are you sure you have completed this workout?",
+          confirmLabel: "Yes",
+        };
+      case "finish":
+        return {
+          title: "Finish Workout",
+          message: "Have you completed all exercises in this workout?",
+          confirmLabel: "Yes",
+        };
+      default:
+        return {
+          title: "",
+          message: "",
+          confirmLabel: "Yes",
+        };
+    }
+  };
+
   const progress = exercises.length > 0 
-    ? (completedExercises.length / exercises.length) * 100 
+    ? (completedExercises / exercises.length) * 100 
     : 0;
 
   const getDifficultyColor = (difficulty: string) => {
@@ -1349,7 +1848,9 @@ const WorkoutDetail = ({ workout, onBack, onComplete, isCompleted }: WorkoutDeta
           <div className="grid grid-cols-1 min-[380px]:grid-cols-3 gap-3 mb-4">
             <div className="flex items-center gap-2">
               <Clock className="w-4 h-4 text-muted-foreground" />
-              <span className="text-base">{workout.duration}</span>
+              <span className="text-base">
+                {status === "inProgress" || status === "completed" ? formatTime(elapsedSeconds) : workout.duration}
+              </span>
             </div>
             <div className="flex items-center gap-2">
               <Flame className="w-4 h-4 text-accent" />
@@ -1374,61 +1875,24 @@ const WorkoutDetail = ({ workout, onBack, onComplete, isCompleted }: WorkoutDeta
               />
             </div>
           </div>
-
-          <Button
-  className="w-full"
-  variant={isCompleted ? "outline" : "default"}
-  onClick={() => {
-    if (!isStarted) {
-    const now = Date.now();
-    setStartTime(now);
-    setIsStarted(true);
-    localStorage.setItem("workout_start", now.toString());
-    console.log("Workout started");
-    return;
-  }
-
-  // COMPLETE workout
-  const saved = localStorage.getItem("workout_start");
-  if (!saved) return;
-
-  const start = parseInt(saved);
-  const durationMs = Date.now() - start;
-  const minutes = Math.max(1, Math.round(durationMs / 60000));
-  const dateId = localDateId().toString();
-
-  console.log("Workout completed:", minutes);
-
-  const uid = auth.currentUser?.uid;
-
-  if (uid) {
-    const ref = doc(db, "users", uid, "daily", dateId);
-
-    setDoc(ref, {
-      workoutMinutes: minutes,
-      updatedAt: serverTimestamp(),
-      dateId
-    }, { merge: true }).then(() => {
-      console.log("Workout saved to Firebase");
-    }).catch(console.error);
-  }
-
-  localStorage.removeItem("workout_start");
-  setIsStarted(false);
-  setStartTime(null);
-
-  onComplete();
-
-  }}
->
-
-            {!isStarted ? (
-  <><Play className="w-5 h-5 mr-2" /> Start Workout</>
-) : (
-  <><Check className="w-5 h-5 mr-2" /> Complete Workout</>
-)}
-
-          </Button>
+          {status === "idle" && canStartTraining && (
+            <Button className="w-full" variant={isCompleted ? "outline" : "default"} onClick={handleStartWorkoutPress}>
+              <Play className="w-5 h-5 mr-2" /> Start Workout
+            </Button>
+          )}
+          {status === "inProgress" && (
+            <Button className="w-full" variant="default" onClick={handleCompleteWorkoutPress} disabled={!canStartTraining}>
+              <Check className="w-5 h-5 mr-2" /> Complete Workout
+            </Button>
+          )}
+          {status === "completed" && (
+            <div className="space-y-3">
+              <div className="text-center text-sm text-success font-medium">Workout Completed</div>
+              <Button className="w-full" variant="outline" onClick={handleResetWorkoutPress}>
+                Reset Workout
+              </Button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -1440,7 +1904,7 @@ const WorkoutDetail = ({ workout, onBack, onComplete, isCompleted }: WorkoutDeta
             <div
               key={exercise.id}
               className={`bg-card rounded-xl border transition-all ${
-                completedExercises.includes(exercise.id) 
+                checkedExerciseIds.includes(exercise.id) 
                   ? "border-success/50 bg-success/5" 
                   : "border-border/50"
               }`}
@@ -1450,20 +1914,21 @@ const WorkoutDetail = ({ workout, onBack, onComplete, isCompleted }: WorkoutDeta
                   <div className="flex items-center gap-3">
                     <button
                       onClick={() => toggleExercise(exercise.id)}
+                      disabled={!canInteractWithExercises}
                       className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
-                        completedExercises.includes(exercise.id)
+                        checkedExerciseIds.includes(exercise.id)
                           ? "bg-success text-success-foreground"
                           : "bg-secondary text-muted-foreground hover:bg-primary/20"
                       }`}
                     >
-                      {completedExercises.includes(exercise.id) ? (
+                      {checkedExerciseIds.includes(exercise.id) ? (
                         <Check className="w-4 h-4" />
                       ) : (
                         <span className="text-base font-medium">{index + 1}</span>
                       )}
                     </button>
                     <div>
-                      <p className={`font-medium ${completedExercises.includes(exercise.id) ? "line-through text-muted-foreground" : ""}`}>
+                      <p className={`font-medium ${checkedExerciseIds.includes(exercise.id) ? "line-through text-muted-foreground" : ""}`}>
                         {exercise.name}
                       </p>
                       <p className="text-base text-muted-foreground">
@@ -1531,6 +1996,19 @@ const WorkoutDetail = ({ workout, onBack, onComplete, isCompleted }: WorkoutDeta
           </div>
         )}
       </div>
+
+      <Dialog open={confirmDialog !== null}>
+        <DialogContent className="w-[calc(100%-1rem)] max-w-sm sm:max-w-md max-h-[85vh] overflow-y-auto p-4 [&>button]:hidden">
+          <DialogHeader>
+            <DialogTitle>{getDialogContent().title}</DialogTitle>
+            <DialogDescription>{getDialogContent().message}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={handleCancelDialog}>No</Button>
+            <Button onClick={handleConfirmAction}>{getDialogContent().confirmLabel}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

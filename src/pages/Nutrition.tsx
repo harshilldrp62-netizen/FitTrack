@@ -6,6 +6,7 @@ import BottomNavigation from "@/components/BottomNavigation";
 import { useToast } from "@/hooks/use-toast";
 import DailyMetricsService from "@/services/DailyMetricsService";
 import { localDateId } from "@/services/DailyMetricsService";
+import { auth } from "@/firebase";
 
 
 interface FoodItem {
@@ -35,14 +36,27 @@ const Nutrition = () => {
   const [expandedMeal, setExpandedMeal] = useState<string | null>(null);
   const [showFoodModal, setShowFoodModal] = useState(false);
   const [selectedMealType, setSelectedMealType] = useState<string>("Snacks");
+  const [userDietType, setUserDietType] = useState<string>("nonveg");
   const [dailyMacros, setDailyMacros] = useState({
-    calories: 0,
+    calories: null as number | null,
     protein: 0,
     carbs: 0,
     fat: 0,
   });
 
   useEffect(() => {
+    try {
+      const rawProfile = localStorage.getItem("userProfile");
+      if (rawProfile) {
+        const parsed = JSON.parse(rawProfile);
+        if (typeof parsed?.dietType === "string" && parsed.dietType.trim()) {
+          setUserDietType(parsed.dietType);
+        }
+      }
+    } catch {
+      // Keep default if profile cache is unavailable/corrupt.
+    }
+
     const today = new Date().toDateString();
     const savedMeals = localStorage.getItem(`meals_${today}`);
     if (savedMeals) {
@@ -65,7 +79,7 @@ const Nutrition = () => {
       });
 
       setDailyMacros({
-        calories: totalCalories,
+        calories: null,
         protein: Math.round(totalProtein),
         carbs: Math.round(totalCarbs),
         fat: Math.round(totalFat),
@@ -73,8 +87,48 @@ const Nutrition = () => {
     }
   }, []);
 
+  useEffect(() => {
+    const syncCaloriesFromFirestore = async () => {
+      try {
+        const progress = await dailyMetrics.getProgressMetrics(localDateId().toString());
+        const firestoreCalories = Math.max(0, Number((progress as any)?.calorieIntake ?? 0) || 0);
+        setDailyMacros((prev) => ({
+          ...prev,
+          calories: Math.round(firestoreCalories),
+        }));
+        console.debug("AppState", `Calories restored: ${Math.round(firestoreCalories)}`);
+      } catch {
+        // Keep existing UI state if progress read fails.
+      }
+    };
+
+    void syncCaloriesFromFirestore();
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    const todayId = localDateId().toString();
+    const unsubscribe = dailyMetrics.listenToProgress(uid, todayId, (data) => {
+      if (!data) {
+        setDailyMacros((prev) => ({
+          ...prev,
+          calories: 0,
+        }));
+        console.debug("AppState", "No progress doc found for nutrition. Using zero calories.");
+        return;
+      }
+      const firestoreCalories = Math.max(0, Number(data?.calorieIntake ?? 0) || 0);
+      setDailyMacros((prev) => ({
+        ...prev,
+        calories: Math.round(firestoreCalories),
+      }));
+      console.debug("AppState", `Calories restored: ${Math.round(firestoreCalories)}`);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   const handleLogFood = (food: any, quantity: number) => {
     const today = new Date().toDateString();
+    const dateId = localDateId().toString();
     const updatedMeals = { ...meals };
 
     if (!updatedMeals[selectedMealType]) {
@@ -94,13 +148,17 @@ const Nutrition = () => {
 
     updatedMeals[selectedMealType].items.push(newItem);
     updatedMeals[selectedMealType].totalCalories += calories;
+    const updatedDailyCaloriesTotal = Object.values(updatedMeals).reduce(
+      (sum, meal) => sum + Math.max(0, Number(meal?.totalCalories ?? 0) || 0),
+      0
+    );
 
     setMeals(updatedMeals);
     localStorage.setItem(`meals_${today}`, JSON.stringify(updatedMeals));
 
     // Update daily macros
     setDailyMacros((prev) => ({
-      calories: prev.calories + calories,
+      calories: Math.max(0, Number(prev.calories ?? 0) + calories),
       protein: prev.protein + Math.round(food.protein * quantity),
       carbs: prev.carbs + Math.round(food.carbs * quantity),
       fat: prev.fat + Math.round(food.fat * quantity),
@@ -110,28 +168,36 @@ const Nutrition = () => {
       title: "Food logged!",
       description: `${food.name} added to ${selectedMealType}`,
     });
+    console.debug("FoodLog", `Food calories: ${calories}`);
+    console.debug("FoodLog", `Updated daily calories: ${updatedDailyCaloriesTotal}`);
 
-    // Firestore sync (non-blocking)
-    dailyMetrics
-      .addLoggedFood(
-        {
-          id: newItem.id,
-          mealType: selectedMealType,
-          name: newItem.name,
-          calories: newItem.calories,
-          protein: newItem.protein,
-          carbs: newItem.carbs,
-          fat: newItem.fat,
-          quantity: newItem.quantity,
-        },
-        {
-          calories,
-          protein: Math.round(food.protein * quantity),
-          carbs: Math.round(food.carbs * quantity),
-          fat: Math.round(food.fat * quantity),
-        }
-      )
-      .catch(() => {});
+    // Firestore sync (non-blocking): store today's authoritative totals once.
+    const foodsForSync = Object.entries(updatedMeals).flatMap(([mealType, meal]) =>
+      (meal.items ?? []).map((item) => ({
+        id: item.id,
+        mealType,
+        name: item.name,
+        calories: item.calories,
+        protein: item.protein,
+        carbs: item.carbs,
+        fat: item.fat,
+        quantity: item.quantity,
+      }))
+    );
+    const totalsForSync = foodsForSync.reduce(
+      (acc, item) => {
+        const qty = Number(item.quantity ?? 1) || 1;
+        acc.calories += Math.max(0, Math.round((item.calories || 0) * qty));
+        acc.protein += Math.max(0, Math.round((item.protein || 0) * qty));
+        acc.carbs += Math.max(0, Math.round((item.carbs || 0) * qty));
+        acc.fat += Math.max(0, Math.round((item.fat || 0) * qty));
+        return acc;
+      },
+      { calories: 0, protein: 0, carbs: 0, fat: 0 }
+    );
+    console.debug("CalorieDebug", `Food log total: ${totalsForSync.calories}`);
+
+    dailyMetrics.setFoodsLoggedAndTotals(foodsForSync as any, totalsForSync, dateId).catch(() => {});
   };
 
   const handleRemoveFood = async (mealType: string, itemId: string) => {
@@ -159,7 +225,7 @@ const Nutrition = () => {
     localStorage.setItem(`meals_${todayKey}`, JSON.stringify(updatedMeals));
 
     setDailyMacros((prev) => ({
-      calories: Math.max(0, prev.calories - removedCalories),
+      calories: Math.max(0, Number(prev.calories ?? 0) - removedCalories),
       protein: Math.max(0, prev.protein - removedProtein),
       carbs: Math.max(0, prev.carbs - removedCarbs),
       fat: Math.max(0, prev.fat - removedFat),
@@ -228,7 +294,7 @@ const Nutrition = () => {
           <div className="grid grid-cols-2 min-[420px]:grid-cols-4 gap-3">
             <div className="text-center">
               <p className="text-xs text-muted-foreground mb-1">Calories</p>
-              <p className="card-number">{dailyMacros.calories}</p>
+              <p className="card-number">{dailyMacros.calories === null ? "--" : dailyMacros.calories}</p>
             </div>
             <div className="text-center">
               <p className="text-xs text-muted-foreground mb-1">Protein</p>
@@ -340,6 +406,7 @@ const Nutrition = () => {
         onClose={() => setShowFoodModal(false)}
         mealType={selectedMealType}
         onLogFood={handleLogFood}
+        userDietType={userDietType}
       />
     </div>
   );

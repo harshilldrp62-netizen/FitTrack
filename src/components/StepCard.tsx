@@ -1,20 +1,16 @@
 import React, { useEffect, useRef, useState } from "react";
 import { TrendingUp } from "lucide-react";
-import { Progress } from "@/components/ui/progress";
-import StepHistoryModal from "@/components/StepHistoryModal";
 import StepHistoryService from "@/services/StepHistoryService";
 import { auth } from "@/firebase";
 import { localDateId } from "@/services/DailyMetricsService";
 import { getNativeSteps } from "@/plugins/steps";
 
-const DAILY_TARGET = 10000;
 const STEP_LATEST_KEY = "steps_latest";
 const historyService = new StepHistoryService();
 
 const StepCard: React.FC = () => {
   const [stepCount, setStepCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
-  const [open, setOpen] = useState(false);
   const lastSavedFirebaseStepsRef = useRef<number>(-1);
 
   const getTodayKey = () => new Date().toDateString();
@@ -93,58 +89,28 @@ const StepCard: React.FC = () => {
     return () => window.removeEventListener("stepUpdate", handler);
   }, []);
 
-  /* ---------------- SAFE PROGRESS ---------------- */
+  /* ---------------- SAFE DISPLAY ---------------- */
   const safeSteps = Number.isFinite(Number(stepCount))
     ? toSafeNumber(stepCount)
     : 0;
-
-  const progressValue = Number.isFinite((safeSteps / DAILY_TARGET) * 100)
-    ? Math.min((safeSteps / DAILY_TARGET) * 100, 100)
-    : 0;
   const caloriesBurned = Number((safeSteps * 0.04).toFixed(2));
 
-  const message =
-    DAILY_TARGET <= 7000
-      ? "Balanced goal for your routine"
-      : "Keep pushing";
-
   return (
-    <>
-      <div onClick={() => setOpen(true)} className="mobile-card cursor-pointer">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center">
-              <TrendingUp className="w-6 h-6 text-accent" />
-            </div>
-            <div>
-              <p className="card-label">Steps Today</p>
-              <p className="card-number">
-                {loading ? "--" : (!isNaN(safeSteps) ? safeSteps : 0)}
-                <span className="text-muted-foreground text-xs font-normal">
-                  {" "}
-                  / {DAILY_TARGET}
-                </span>
-              </p>
-            </div>
-          </div>
-
-          <div className="text-right">
-            <p className="card-label">Progress</p>
-            <p className="text-2xl font-bold text-primary">
-              {loading ? "--" : `${Math.round(progressValue)}%`}
-            </p>
-          </div>
+    <div className="mobile-card">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center">
+          <TrendingUp className="w-6 h-6 text-accent" />
         </div>
-
-        <Progress value={loading ? 0 : progressValue} className="h-3 bg-secondary" />
-
-        <p className="text-sm text-muted-foreground mt-3">
-          {message} - {caloriesBurned.toFixed(2)} kcal
-        </p>
+        <div>
+          <p className="card-label">Steps Today</p>
+          <p className="card-number">
+            {loading ? "--" : (!isNaN(safeSteps) ? safeSteps : 0)}
+          </p>
+        </div>
       </div>
 
-      <StepHistoryModal open={open} onClose={() => setOpen(false)} />
-    </>
+      <p className="text-sm text-muted-foreground">Calories burned: {caloriesBurned.toFixed(2)} kcal</p>
+    </div>
   );
 };
 

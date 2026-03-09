@@ -1,5 +1,9 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
+import { onAuthStateChanged } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "@/firebase";
+import { localDateId } from "@/services/DailyMetricsService";
 import { 
   ArrowLeft, 
   Dumbbell,
@@ -36,6 +40,7 @@ const Workouts = () => {
   const [completedWorkouts, setCompletedWorkouts] = useState<string[]>([]);
   const [selectedDay, setSelectedDay] = useState(new Date().getDay());
   const [selectedWorkout, setSelectedWorkout] = useState<Workout | null>(null);
+  const [selectedWorkoutDay, setSelectedWorkoutDay] = useState<number | null>(null);
   const [filterType, setFilterType] = useState<string>("All");
 
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -51,6 +56,47 @@ const Workouts = () => {
     if (saved) {
       setCompletedWorkouts(JSON.parse(saved));
     }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const today = new Date().toDateString();
+
+    const restoreWorkoutCompletion = async (uid: string) => {
+      try {
+        const dateId = localDateId().toString();
+        const snap = await getDoc(doc(db, "users", uid, "workouts", dateId));
+        if (!snap.exists()) {
+          if (cancelled) return;
+          setCompletedWorkouts([]);
+          localStorage.setItem(`completedWorkouts_${today}`, JSON.stringify([]));
+          console.debug("AppState", "No workout completion doc for today.");
+          return;
+        }
+
+        const data = snap.data() as Record<string, any>;
+        const restored =
+          Boolean(data?.workoutCompleted) && typeof data?.workoutId === "string"
+            ? [data.workoutId]
+            : [];
+        if (cancelled) return;
+        setCompletedWorkouts(restored);
+        localStorage.setItem(`completedWorkouts_${today}`, JSON.stringify(restored));
+        console.debug("AppState", `Workout completion restored: ${restored.length > 0}`);
+      } catch (error) {
+        console.error("AppState", "Failed to restore workout completion", error);
+      }
+    };
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (!user?.uid) return;
+      void restoreWorkoutCompletion(user.uid);
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, []);
 
   const getWorkoutsForGoal = (): Workout[] => {
@@ -95,12 +141,10 @@ const Workouts = () => {
     { day: 6, workout: getWorkoutsForGoal()[0] },
   ];
 
-  const toggleComplete = (workoutId: string) => {
+  const markWorkoutCompleted = (workoutId: string) => {
     const today = new Date().toDateString();
-    const newCompleted = completedWorkouts.includes(workoutId)
-      ? completedWorkouts.filter(id => id !== workoutId)
-      : [...completedWorkouts, workoutId];
-    
+    if (completedWorkouts.includes(workoutId)) return;
+    const newCompleted = [...completedWorkouts, workoutId];
     setCompletedWorkouts(newCompleted);
     localStorage.setItem(`completedWorkouts_${today}`, JSON.stringify(newCompleted));
   };
@@ -115,17 +159,28 @@ const Workouts = () => {
   };
 
   const todaySchedule = weekSchedule[selectedDay];
+  const currentDay = new Date().getDay();
+  const isCurrentSelectedDay = selectedDay === currentDay;
+  const isSelectedWorkoutSchedulableToday = selectedWorkout
+    ? (selectedWorkoutDay !== null
+        ? selectedWorkoutDay === currentDay
+        : weekSchedule[currentDay]?.workout?.id === selectedWorkout.id)
+    : false;
 
   // Show workout detail view
   if (selectedWorkout) {
-    return (
-      <WorkoutDetail
-        workout={selectedWorkout}
-        onBack={() => setSelectedWorkout(null)}
-        onComplete={() => toggleComplete(selectedWorkout.id)}
-        isCompleted={completedWorkouts.includes(selectedWorkout.id)}
-      />
-    );
+      return (
+        <WorkoutDetail
+          workout={selectedWorkout}
+          canStartTraining={isSelectedWorkoutSchedulableToday}
+          onBack={() => {
+            setSelectedWorkout(null);
+            setSelectedWorkoutDay(null);
+          }}
+          onComplete={() => markWorkoutCompleted(selectedWorkout.id)}
+          isCompleted={completedWorkouts.includes(selectedWorkout.id)}
+        />
+      );
   }
 
   return (
@@ -191,7 +246,10 @@ const Workouts = () => {
         ) : todaySchedule.workout ? (
           <div 
             className="bg-card rounded-2xl p-4 border border-border/50 cursor-pointer hover:border-primary/50 transition-colors"
-            onClick={() => setSelectedWorkout(todaySchedule.workout!)}
+            onClick={() => {
+              setSelectedWorkout(todaySchedule.workout!);
+              setSelectedWorkoutDay(selectedDay);
+            }}
           >
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-4">
@@ -224,35 +282,39 @@ const Workouts = () => {
             </div>
 
             <div className="flex flex-col sm:flex-row gap-3">
-  <Button
-    className="flex-1"
-    size="lg"
-    variant={completedWorkouts.includes(todaySchedule.workout.id) ? "outline" : "default"}
-    onClick={(e) => {
-      e.stopPropagation();
-      toggleComplete(todaySchedule.workout!.id);
-    }}
-  >
-    {completedWorkouts.includes(todaySchedule.workout.id) ? (
-      <>
-        <Check className="w-5 h-5 mr-2" />
-        Completed
-      </>
-    ) : (
-      <>
-        <Play className="w-5 h-5 mr-2" />
-        Start Workout
-      </>
-    )}
-  </Button>
+  {isCurrentSelectedDay && (
+    <Button
+      className="flex-1"
+      size="lg"
+      variant={completedWorkouts.includes(todaySchedule.workout.id) ? "outline" : "default"}
+      onClick={(e) => {
+        e.stopPropagation();
+        setSelectedWorkout(todaySchedule.workout!);
+        setSelectedWorkoutDay(selectedDay);
+      }}
+    >
+      {completedWorkouts.includes(todaySchedule.workout.id) ? (
+        <>
+          <Check className="w-5 h-5 mr-2" />
+          Completed
+        </>
+      ) : (
+        <>
+          <Play className="w-5 h-5 mr-2" />
+          Start Workout
+        </>
+      )}
+    </Button>
+  )}
 
   <Button
     variant="outline"
-    className="flex-1"
+    className={isCurrentSelectedDay ? "flex-1" : "w-full"}
     size="lg"
     onClick={(e) => {
       e.stopPropagation();
       setSelectedWorkout(todaySchedule.workout!);
+      setSelectedWorkoutDay(selectedDay);
     }}
   >
     View Details
@@ -292,7 +354,10 @@ const Workouts = () => {
             .map((workout) => (
               <button
                 key={workout.id}
-                onClick={() => setSelectedWorkout(workout)}
+                onClick={() => {
+                  setSelectedWorkout(workout);
+                  setSelectedWorkoutDay(null);
+                }}
                 className="w-full bg-card rounded-2xl p-5 shadow-sm border border-border/50 flex items-center justify-between hover:border-primary/50 transition-colors"
               >
                 <div className="flex items-center gap-4">

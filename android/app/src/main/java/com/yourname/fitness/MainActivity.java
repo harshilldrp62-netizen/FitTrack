@@ -3,6 +3,8 @@ package com.yourname.fitness;
 import static androidx.core.content.ContextCompat.startForegroundService;
 
 import android.Manifest;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.pm.PackageManager;
 import android.content.Intent;
 import android.os.Build;
@@ -13,13 +15,14 @@ import android.util.Log;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
 
     private static final String TAG = "MainActivity";
     private static final int REQ_ACTIVITY_RECOGNITION = 9001;
+    private static final int REQ_POST_NOTIFICATIONS = 9002;
+    private static final String REMINDER_CHANNEL_ID = "fitness_reminders";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -27,6 +30,7 @@ public class MainActivity extends BridgeActivity {
         // If registered after super.onCreate, Capacitor may not expose it to JS.
         registerPlugin(StepPlugin.class);
         super.onCreate(savedInstanceState);
+        setupReminderNotifications();
         Log.d(TAG, "onCreate: bridge activity created");
     }
 
@@ -76,6 +80,46 @@ public class MainActivity extends BridgeActivity {
             if (granted) {
                 startStepServiceIfNeeded();
             }
+            return;
+        }
+
+        if (requestCode == REQ_POST_NOTIFICATIONS) {
+            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            Log.d(TAG, "onRequestPermissionsResult: POST_NOTIFICATIONS granted=" + granted);
+        }
+    }
+
+    private void setupReminderNotifications() {
+        createReminderChannel();
+        requestNotificationPermissionIfNeeded();
+        ReminderScheduler.rescheduleFromPreferences(this);
+    }
+
+    private void createReminderChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+
+        NotificationChannel channel = new NotificationChannel(
+            REMINDER_CHANNEL_ID,
+            "Fitness Reminders",
+            NotificationManager.IMPORTANCE_HIGH
+        );
+        manager.createNotificationChannel(channel);
+        Log.d("ReminderDebug", "Reminder notification channel initialized");
+    }
+
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return;
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                this,
+                new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                REQ_POST_NOTIFICATIONS
+            );
         }
     }
 }

@@ -2,13 +2,14 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Mail, Phone, ArrowLeft, ArrowRight, Shield, CheckCircle2 } from "lucide-react";
+import { Mail, ArrowLeft, ArrowRight, Shield, CheckCircle2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { FirebaseError } from "firebase/app";
+import { sendPasswordResetEmail } from "firebase/auth";
+import { auth } from "@/firebase";
 
 const ForgotPassword = () => {
-  const [method, setMethod] = useState<"email" | "phone">("email");
   const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
   const navigate = useNavigate();
@@ -17,16 +18,38 @@ const ForgotPassword = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    setIsSuccess(true);
-    toast({
-      title: "Reset link sent!",
-      description: `Check your ${method === "email" ? "email inbox" : "phone messages"} for the reset link.`,
-    });
-    
-    setIsLoading(false);
+
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      setIsSuccess(true);
+      toast({
+        title: "Password reset email sent",
+        description: "Password reset link has been sent to your email.",
+      });
+    } catch (error: unknown) {
+      const code = error instanceof FirebaseError ? error.code : "";
+      if (code === "auth/invalid-email") {
+        toast({
+          title: "Invalid email",
+          description: "Invalid email address.",
+          variant: "destructive",
+        });
+      } else if (code === "auth/user-not-found") {
+        toast({
+          title: "User not found",
+          description: "No account found with this email address.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Reset failed",
+          description: "Unable to send reset link. Please try again.",
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   if (isSuccess) {
@@ -42,10 +65,10 @@ const ForgotPassword = () => {
             <CheckCircle2 className="w-12 h-12 text-success" />
           </div>
           <h1 className="mobile-title text-foreground mb-4">
-            Check your {method === "email" ? "inbox" : "messages"}
+            Check your inbox
           </h1>
           <p className="text-muted-foreground text-sm mb-8">
-            We've sent a password reset link to your {method}.
+            We've sent a password reset link to your email.
           </p>
           <Button onClick={() => navigate("/login")} className="w-full" size="lg">
             Back to Login
@@ -83,59 +106,20 @@ const ForgotPassword = () => {
             Reset Password
           </h1>
           <p className="text-muted-foreground text-sm">
-            Enter your email or phone to receive a reset link
+            Enter your email to receive a reset link
           </p>
         </div>
 
         <div className="w-full max-w-md mx-auto animate-fade-in" style={{ animationDelay: "0.1s" }}>
-          {/* Toggle Email/Phone */}
-          <div className="flex bg-secondary rounded-xl p-1.5 mb-8">
-            <button
-              type="button"
-              onClick={() => setMethod("email")}
-              className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-medium transition-all duration-300 ${
-                method === "email"
-                  ? "bg-gradient-primary text-primary-foreground shadow-md"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Mail className="w-4 h-4" />
-              Email
-            </button>
-            <button
-              type="button"
-              onClick={() => setMethod("phone")}
-              className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-medium transition-all duration-300 ${
-                method === "phone"
-                  ? "bg-gradient-primary text-primary-foreground shadow-md"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Phone className="w-4 h-4" />
-              Phone
-            </button>
-          </div>
-
           <form onSubmit={handleSubmit} className="space-y-6">
-            {method === "email" ? (
-              <Input
-                type="email"
-                placeholder="Enter your email address"
-                icon={<Mail className="w-5 h-5" />}
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            ) : (
-              <Input
-                type="tel"
-                placeholder="Enter your phone number"
-                icon={<Phone className="w-5 h-5" />}
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                required
-              />
-            )}
+            <Input
+              type="email"
+              placeholder="Enter your email address"
+              icon={<Mail className="w-5 h-5" />}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
 
             <Button
               type="submit"

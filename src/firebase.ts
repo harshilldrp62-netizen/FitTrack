@@ -22,7 +22,7 @@ console.log("[Firebase] ✅ Auth instance created");
 
 // Ensure auth state persists across app restarts until the user signs out.
 // Use browserLocalPersistence where available; gracefully ignore errors (e.g., in some native environments).
-setPersistence(auth, browserLocalPersistence).catch((err) => {
+export const authReady = setPersistence(auth, browserLocalPersistence).catch((err) => {
   // Not fatal — auth will use its default persistence if this fails.
   // Log for debugging in case persistence can't be set in the current environment.
   // eslint-disable-next-line no-console

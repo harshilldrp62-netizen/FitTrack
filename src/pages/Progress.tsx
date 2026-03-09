@@ -1,9 +1,8 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { auth } from "@/firebase";
-import DailyMetricsService, { localDateId } from "@/services/DailyMetricsService";
+import DailyMetricsService from "@/services/DailyMetricsService";
 import { localDateIdFromDate } from "@/services/DailyMetricsService";
-import StepHistoryService from "@/services/StepHistoryService";
 import { 
   ArrowLeft, 
   TrendingUp,
@@ -13,91 +12,251 @@ import {
   ChevronRight
 } from "lucide-react";
 import { CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis } from "recharts";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import BottomNavigation from "@/components/BottomNavigation";
 
 const Progress = () => {
+  const DEFAULT_DAILY_TARGET_CALORIES = 2000;
+  const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  type ProgressCache = {
+    weeklyCalories?: Array<{ day: string; calories: number }>;
+    monthlyStats?: { calories: number; workouts: number; streak: number };
+    streakInfo?: { streak: number; longest: number };
+    qualifiedDateIds?: string[];
+  };
+  const toSafeNumber = (value: unknown): number => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const getDailyTargetCalories = (daily: any): number =>
+    Math.max(0, toSafeNumber(daily?.dailyTargetCalories ?? daily?.caloriesTarget ?? DEFAULT_DAILY_TARGET_CALORIES));
+  const getIntakeCalories = (daily: any): number =>
+    Math.max(0, toSafeNumber(daily?.calorieIntake ?? 0));
+  const isStreakQualifiedByIntake = (daily: any): boolean => getIntakeCalories(daily) >= getDailyTargetCalories(daily);
+  const parseDateId = (dateId: string): Date | null => {
+    const [y, m, d] = dateId.split("-").map((v) => Number(v));
+    if (!y || !m || !d) return null;
+    return new Date(y, m - 1, d);
+  };
   const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [weeklyData, setWeeklyData] = useState<any[]>([]);
+  const [weeklyCalories, setWeeklyCalories] = useState<Array<{ day: string; calories: number }>>([]);
+  const [weeklyLoading, setWeeklyLoading] = useState(false);
   const [monthlyStats, setMonthlyStats] = useState({ calories: 0, workouts: 0, streak: 0 });
-  const [timeRange, setTimeRange] = useState<"week" | "month" | "3months">("week");
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [selectedData, setSelectedData] = useState<any>(null);
   const [streakInfo, setStreakInfo] = useState({ streak: 0, longest: 0 });
+  const [qualifiedDateIds, setQualifiedDateIds] = useState<Set<string>>(new Set());
 
   const dailyMetrics = new DailyMetricsService();
-  const stepHistoryService = new StepHistoryService();
-
-  const loadWeeklyData = async () => {
+  const zeroCaloriesWeek = [
+    { day: "Mon", calories: 0 },
+    { day: "Tue", calories: 0 },
+    { day: "Wed", calories: 0 },
+    { day: "Thu", calories: 0 },
+    { day: "Fri", calories: 0 },
+    { day: "Sat", calories: 0 },
+    { day: "Sun", calories: 0 },
+  ];
+  const cacheKey = (uid: string) => `progress_cache_${uid}`;
+  const readCache = (uid: string): ProgressCache | null => {
     try {
-      const uid = auth.currentUser?.uid;
-      if (!uid) return;
-
-      const firebaseWeek = await stepHistoryService.getWeeklySteps(uid);
-      if (firebaseWeek.length === 7) {
-        setWeeklyData(firebaseWeek.map((d) => ({
-          day: d.day,
-          steps: Number(d.steps) || 0,
-        })));
-        return;
-      }
-
-      // local fallback with strict 7-day output
-      const localFallback: Array<{ day: string; steps: number }> = [];
-      const base = new Date();
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date(base);
-        d.setDate(base.getDate() - i);
-        const dateKey = `steps_total_${d.toDateString()}`;
-        localFallback.push({
-          day: d.toLocaleDateString("en-US", { weekday: "short" }),
-          steps: Number(localStorage.getItem(dateKey) || 0) || 0,
-        });
-      }
-      setWeeklyData(localFallback);
-    } catch (e) {
-      console.error(e);
-      setWeeklyData([
-        { day: "Mon", steps: 0 },
-        { day: "Tue", steps: 0 },
-        { day: "Wed", steps: 0 },
-        { day: "Thu", steps: 0 },
-        { day: "Fri", steps: 0 },
-        { day: "Sat", steps: 0 },
-        { day: "Sun", steps: 0 },
-      ]);
+      const raw = localStorage.getItem(cacheKey(uid));
+      if (!raw) return null;
+      return JSON.parse(raw) as ProgressCache;
+    } catch {
+      return null;
     }
   };
-const loadStreak = async () => {
-  const uid = auth.currentUser?.uid;
-  if (!uid) return;
-  const data = await dailyMetrics.calculateStreak(uid);
-  setStreakInfo(data);
-  let streak = 0;
+  const writeCache = (uid: string, patch: ProgressCache) => {
+    const current = readCache(uid) ?? {};
+    const next: ProgressCache = {
+      ...current,
+      ...patch,
+      monthlyStats: {
+        calories: patch.monthlyStats?.calories ?? current.monthlyStats?.calories ?? 0,
+        workouts: patch.monthlyStats?.workouts ?? current.monthlyStats?.workouts ?? 0,
+        streak: patch.monthlyStats?.streak ?? current.monthlyStats?.streak ?? 0,
+      },
+    };
+    localStorage.setItem(cacheKey(uid), JSON.stringify(next));
+  };
+  const normalizeWeeklyCalories = (rows?: Array<{ day: string; calories: number }>) => {
+    const caloriesByDay = new Array<number>(7).fill(0);
+    (rows ?? []).forEach((row) => {
+      const idx = WEEKDAY_LABELS.indexOf(String(row?.day ?? "").slice(0, 3));
+      if (idx >= 0) {
+        caloriesByDay[idx] = Math.max(0, Math.round(toSafeNumber(row?.calories)));
+      }
+    });
+    return WEEKDAY_LABELS.map((day, idx) => ({ day, calories: caloriesByDay[idx] }));
+  };
 
-  for (let i = 0; i < 30; i++) {
-    const date = new Date();
-    date.setDate(date.getDate() - i);
+  const loadWeeklyData = async () => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    setWeeklyLoading(true);
+    try {
+      const rows = await dailyMetrics.getRecentProgress(uid, 7);
+      const caloriesByDay = new Array<number>(7).fill(0);
+      rows.forEach((row) => {
+        const date = parseDateId(String(row?.dateId ?? ""));
+        if (!date) return;
+        const dayIndex = (date.getDay() + 6) % 7; // Mon=0 ... Sun=6
+        const intake = Math.max(0, Math.round(toSafeNumber(row.calorieIntake)));
+        caloriesByDay[dayIndex] = intake;
+        console.debug("CalorieDebug", `Firestore value (${row?.dateId}): ${intake}`);
+      });
+      const caloriesResult = WEEKDAY_LABELS.map((day, idx) => ({
+        day,
+        calories: caloriesByDay[idx],
+      }));
+      const weeklyCaloriesTotal = rows.reduce(
+        (sum, row) => sum + Math.max(0, Math.round(toSafeNumber(row.calorieIntake))),
+        0
+      );
+      console.debug("CalorieDebug", `Weekly Firestore total: ${Math.max(0, Math.round(weeklyCaloriesTotal))}`);
+      const weeklyWorkoutCount = rows.reduce(
+        (sum, row) => sum + Math.max(0, Math.round(toSafeNumber(row.workoutsCompleted))),
+        0
+      );
+      const todayProgress = rows.find((row) => String(row?.dateId ?? "") === localDateIdFromDate(new Date()));
+      console.debug("ProgressDebug", `Calories loaded: ${Math.max(0, Math.round(weeklyCaloriesTotal))}`);
+      console.debug("ProgressDebug", `Workout minutes loaded: ${Math.max(0, Math.round(toSafeNumber(todayProgress?.workoutMinutes ?? 0)))}`);
 
-    const dateId = localDateIdFromDate(date);
+      setWeeklyCalories(caloriesResult);
+      setMonthlyStats((prev) => ({
+        ...prev,
+        calories: Math.max(0, Math.round(weeklyCaloriesTotal)),
+        workouts: weeklyWorkoutCount,
+      }));
+      writeCache(uid, {
+        weeklyCalories: caloriesResult,
+        monthlyStats: {
+          calories: Math.max(0, Math.round(weeklyCaloriesTotal)),
+          workouts: weeklyWorkoutCount,
+          streak: monthlyStats.streak,
+        },
+      });
+    } catch (e) {
+      console.error("ProgressFetch", "Failed to load progress data", e);
+      const cached = readCache(uid);
+      if (cached?.weeklyCalories) {
+        setWeeklyCalories(normalizeWeeklyCalories(cached.weeklyCalories));
+      } else {
+        setWeeklyCalories(zeroCaloriesWeek);
+      }
+      if (cached?.monthlyStats) {
+        setMonthlyStats((prev) => ({
+          ...prev,
+          calories: cached.monthlyStats?.calories ?? prev.calories,
+          workouts: cached.monthlyStats?.workouts ?? prev.workouts,
+        }));
+      }
+    } finally {
+      setWeeklyLoading(false);
+    }
+  };
+  const loadStreak = async () => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    try {
+      const rows = await dailyMetrics.getAllProgress(uid);
+      const byDate = new Map<string, boolean>();
+      rows.forEach((row) => {
+        const dateId = String(row?.dateId ?? "");
+        if (!dateId) return;
+        byDate.set(dateId, isStreakQualifiedByIntake(row));
+      });
 
-    const data = await dailyMetrics.getDailyMetrics(dateId, uid);
+      let currentStreak = 0;
+      const cursor = new Date();
+      cursor.setHours(0, 0, 0, 0);
+      for (let i = 0; i < 366; i++) {
+        const id = localDateIdFromDate(cursor);
+        if (byDate.get(id) === true) {
+          currentStreak += 1;
+          cursor.setDate(cursor.getDate() - 1);
+          continue;
+        }
+        break;
+      }
 
-    const active =
-      (data?.steps || 0) > 0 ||
-      (data?.nutritionTotals?.calories || 0) > 0 ||
-      (data?.workoutMinutes || 0) > 0 ||
-      (data?.waterGlasses || 0) > 0;
+      const qualifiedIds = Array.from(byDate.entries())
+        .filter(([, qualified]) => qualified)
+        .map(([id]) => id)
+        .sort((a, b) => a.localeCompare(b));
 
-    if (active) streak++;
-    else break;
-  }
+      let longest = 0;
+      let run = 0;
+      let prevDate: Date | null = null;
+      for (const id of qualifiedIds) {
+        const d = parseDateId(id);
+        if (!d) continue;
+        if (!prevDate) {
+          run = 1;
+          longest = Math.max(longest, run);
+          prevDate = d;
+          continue;
+        }
+        const diff = Math.round((d.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24));
+        if (diff === 1) {
+          run += 1;
+        } else {
+          run = 1;
+        }
+        longest = Math.max(longest, run);
+        prevDate = d;
+      }
 
-  setMonthlyStats(prev => ({
-    ...prev,
-    streak
-  }));
-};
+      setStreakInfo({ streak: currentStreak, longest });
+      setMonthlyStats((prev) => ({
+        ...prev,
+        streak: currentStreak
+      }));
+      writeCache(uid, {
+        streakInfo: { streak: currentStreak, longest },
+        monthlyStats: {
+          calories: monthlyStats.calories,
+          workouts: monthlyStats.workouts,
+          streak: currentStreak,
+        },
+      });
+    } catch (e) {
+      console.error("ProgressFetch", "Failed to load progress data", e);
+      const cached = readCache(uid);
+      if (cached?.streakInfo) {
+        setStreakInfo(cached.streakInfo);
+      }
+      if (cached?.monthlyStats) {
+        setMonthlyStats((prev) => ({
+          ...prev,
+          streak: cached.monthlyStats?.streak ?? prev.streak,
+        }));
+      }
+    }
+  };
+  const loadMonthlyCalendarData = async () => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      setQualifiedDateIds(new Set());
+      return;
+    }
+    try {
+      const rows = await dailyMetrics.getMonthlyProgress(uid, currentMonth);
+      const qualified = new Set(
+        rows
+          .filter((r) => isStreakQualifiedByIntake(r))
+          .map((r) => String(r.dateId))
+      );
+      setQualifiedDateIds(qualified);
+      writeCache(uid, { qualifiedDateIds: Array.from(qualified) });
+    } catch (e) {
+      console.error("ProgressFetch", "Failed to load progress data", e);
+      const cached = readCache(uid);
+      if (cached?.qualifiedDateIds) {
+        setQualifiedDateIds(new Set(cached.qualifiedDateIds));
+      }
+    }
+  };
 
   useEffect(() => {
   const checkUserAndLoad = async () => {
@@ -107,16 +266,12 @@ const loadStreak = async () => {
       if (uid) {
         await loadWeeklyData();
         await loadStreak();
+        await loadMonthlyCalendarData();
       } else {
-        setWeeklyData([
-          { day: "Mon", steps: 0 },
-          { day: "Tue", steps: 0 },
-          { day: "Wed", steps: 0 },
-          { day: "Thu", steps: 0 },
-          { day: "Fri", steps: 0 },
-          { day: "Sat", steps: 0 },
-          { day: "Sun", steps: 0 },
-        ]);
+        setWeeklyCalories(zeroCaloriesWeek);
+        setStreakInfo({ streak: 0, longest: 0 });
+        setMonthlyStats({ calories: 0, workouts: 0, streak: 0 });
+        setQualifiedDateIds(new Set());
       }
     }, 800);
   };
@@ -130,11 +285,15 @@ const todayId = localDateIdFromDate(new Date());
 const unsubscribe = dailyMetrics.listenToDaily(uid, todayId, async () => {
   await loadWeeklyData();
   await loadStreak();
+  await loadMonthlyCalendarData();
 });
 
 return () => unsubscribe();
 
 }, []);
+useEffect(() => {
+  void loadMonthlyCalendarData();
+}, [currentMonth]);
 
   
 
@@ -163,12 +322,11 @@ return () => unsubscribe();
            currentMonth.getFullYear() === today.getFullYear();
   };
 
-  const hasActivity = (day: number) => {
+  const hasQualifiedStreak = (day: number) => {
     if (!day) return false;
     const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
-    const savedMeals = localStorage.getItem(`meals_${date.toDateString()}`);
-    const savedWorkouts = localStorage.getItem(`completedWorkouts_${date.toDateString()}`);
-    return (savedMeals || savedWorkouts) ? true : Math.random() > 0.6;
+    const dateId = localDateIdFromDate(date);
+    return qualifiedDateIds.has(dateId);
   };
 
   const prevMonth = () => {
@@ -204,15 +362,9 @@ return () => unsubscribe();
         </div>
       </header>
 
-      {/* Time Range Tabs */}
+      {/* Weekly Progress Header */}
       <div className="relative z-10 mb-4">
-        <Tabs value={timeRange} onValueChange={(v) => setTimeRange(v as "week" | "month" | "3months")}>
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="week">Week</TabsTrigger>
-            <TabsTrigger value="month">Month</TabsTrigger>
-            <TabsTrigger value="3months">3 Months</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <h2 className="mobile-title">Weekly Progress</h2>
       </div>
 
       {/* Stats Overview */}
@@ -220,8 +372,8 @@ return () => unsubscribe();
         <div className="grid grid-cols-1 min-[380px]:grid-cols-3 gap-3">
           <div className="bg-card rounded-2xl p-4 border border-border/50 text-center">
             <Flame className="w-6 h-6 text-accent mx-auto mb-2" />
-            <p className="card-number">{monthlyStats.calories.toLocaleString()}</p>
-            <p className="text-xs text-muted-foreground">Calories (30d)</p>
+            <p className="card-number">{Math.max(0, Math.round(monthlyStats.calories))}</p>
+            <p className="text-xs text-muted-foreground">Calories (7d)</p>
           </div>
           <div className="bg-card rounded-2xl p-4 border border-border/50 text-center">
             <Dumbbell className="w-6 h-6 text-primary mx-auto mb-2" />
@@ -239,23 +391,29 @@ return () => unsubscribe();
       {/* Weekly Chart */}
       <div className="relative z-10 mb-6 animate-slide-up" style={{ animationDelay: "0.1s" }}>
         <div className="bg-card rounded-2xl p-4 border border-border/50">
-          <h2 className="mobile-title mb-4">Weekly Steps</h2>
+          <h2 className="mobile-title mb-4">Weekly Calories</h2>
           <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={weeklyData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: "hsl(var(--card))", 
-                    border: "1px solid hsl(var(--border))",
-                    borderRadius: "8px"
-                  }} 
-                />
-                <Bar dataKey="steps" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {weeklyLoading ? (
+              <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                Loading weekly calories...
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={weeklyCalories}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                  <Tooltip 
+                    contentStyle={{ 
+                      backgroundColor: "hsl(var(--card))", 
+                      border: "1px solid hsl(var(--border))",
+                      borderRadius: "8px"
+                    }} 
+                  />
+                  <Bar dataKey="calories" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
       </div>
@@ -305,17 +463,24 @@ return () => unsubscribe();
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
-    const data = await dailyMetrics.getDailyMetrics(dateId, uid);
+    const [dailyData, progressData] = await Promise.all([
+      dailyMetrics.getDailyMetrics(dateId, uid),
+      dailyMetrics.getProgressMetrics(dateId, uid),
+    ]);
 
     setSelectedDate(dateId);
-    setSelectedData(data || {});
+    setSelectedData({
+      ...(dailyData || {}),
+      workoutMinutes: Math.max(0, Math.round(toSafeNumber((progressData as any)?.workoutMinutes ?? (dailyData as any)?.workoutMinutes ?? 0))),
+      calorieIntake: Math.max(0, Math.round(toSafeNumber((progressData as any)?.calorieIntake ?? 0))),
+    });
   }}
   className={`cursor-pointer aspect-square flex items-center justify-center rounded-lg text-sm relative ${
     day ? (isToday(day) ? "bg-primary text-primary-foreground" : "hover:bg-secondary") : ""
   }`}
 >
   {day}
-                {day && hasActivity(day) && !isToday(day) && (
+                {day && hasQualifiedStreak(day) && (
                   <span className="absolute bottom-1 w-1.5 h-1.5 rounded-full bg-success" />
                 )}
               </div>
@@ -325,7 +490,7 @@ return () => unsubscribe();
           <div className="flex items-center justify-center gap-4 mt-4 pt-4 border-t border-border/50">
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-success" />
-              <span className="text-xs text-muted-foreground">Activity logged</span>
+              <span className="text-xs text-muted-foreground">Streak qualified</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-primary" />

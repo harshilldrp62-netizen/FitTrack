@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { auth } from "@/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 import { localDateId } from "@/services/DailyMetricsService";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "@/firebase";
@@ -8,7 +9,6 @@ import { db } from "@/firebase";
 
 import {
   User,
-  Utensils,
   Flame,
   Droplets,
   Plus,
@@ -16,12 +16,9 @@ import {
   Target,
   Bell,
   Footprints,
-  Dumbbell,
-  TrendingUp,
   Clock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import LogFoodModal from "@/components/LogFoodModal";
 import StepCard from "@/components/StepCard";
 import BottomNavigation from "@/components/BottomNavigation";
 import { useToast } from "@/hooks/use-toast";
@@ -46,9 +43,8 @@ const Home = () => {
   return saved ? Math.floor(Number(saved)) : 0;
 });
   const [waterIntake, setWaterIntake] = useState<number>(0);
-  const [showFoodModal, setShowFoodModal] = useState(false);
-  const [todayCalories, setTodayCalories] = useState<number>(0);
-  const [workoutMinutes, setWorkoutMinutes] = useState<number>(0);
+  const [todayCalories, setTodayCalories] = useState<number | null>(null);
+  const [workoutMinutes, setWorkoutMinutes] = useState<number | null>(null);
 
   const waterGoal = 8;
   const dailyMetrics = new DailyMetricsService();
@@ -111,19 +107,48 @@ if (lastDate !== today) {
   localStorage.removeItem(`water_${lastDate}`);
 }
 
-    // Water: Firebase-first (daily metrics), localStorage fallback
+    // Daily cards: Firebase-first, localStorage fallback for water only.
     (async () => {
       try {
         const dateId = localDateId().toString();
-        const data = await dailyMetrics.getDailyMetrics(dateId);
-        const firebaseWater = toSafeNumber((data as any)?.waterGlasses);
-        if (firebaseWater >= 0) {
-          setWaterIntake(firebaseWater);
-          localStorage.setItem(`water_${today}`, firebaseWater.toString());
+        const dailyData = await dailyMetrics.getDailyMetrics(dateId);
+        const progressData = await dailyMetrics.getProgressMetrics(dateId);
+        const progressRow = (progressData as any) ?? null;
+        const firestoreCalories = toSafeNumber(progressRow?.calorieIntake);
+        const firestoreWorkout = toSafeNumber(progressRow?.workoutMinutes);
+        const firestoreWater = progressRow && typeof progressRow?.waterGlasses === "number"
+          ? toSafeNumber(progressRow.waterGlasses)
+          : null;
+        const firestoreSteps = progressRow && typeof progressRow?.steps === "number"
+          ? toSafeNumber(progressRow.steps)
+          : null;
+
+        if (progressRow) {
+          setTodayCalories(Math.floor(firestoreCalories));
+          setWorkoutMinutes(Math.floor(firestoreWorkout));
+          localStorage.setItem("home_calories_latest", Math.floor(firestoreCalories).toString());
+          localStorage.setItem("home_workout_minutes_latest", Math.floor(firestoreWorkout).toString());
+          console.debug("AppState", `Calories restored: ${Math.floor(firestoreCalories)}`);
+          console.debug("AppState", `Workout minutes restored: ${Math.floor(firestoreWorkout)}`);
+        } else {
+          setTodayCalories(0);
+          setWorkoutMinutes(0);
+          console.debug("AppState", "No progress doc for today. Using zero values.");
         }
-        const firebaseWorkout = toSafeNumber((data as any)?.workoutMinutes);
-        setWorkoutMinutes(Math.floor(firebaseWorkout));
- 
+
+        if (typeof firestoreWater === "number") {
+          setWaterIntake(Math.floor(firestoreWater));
+          localStorage.setItem(`water_${today}`, Math.floor(firestoreWater).toString());
+        } else {
+          const dailyWater = toSafeNumber((dailyData as any)?.waterGlasses);
+          setWaterIntake(Math.floor(dailyWater));
+          localStorage.setItem(`water_${today}`, Math.floor(dailyWater).toString());
+        }
+
+        if (typeof firestoreSteps === "number") {
+          setSteps(Math.floor(firestoreSteps));
+          localStorage.setItem("steps_latest", Math.floor(firestoreSteps).toString());
+        }
       } catch {
         // ignore and fall back to localStorage
       }
@@ -132,28 +157,24 @@ if (lastDate !== today) {
       if (savedWater) setWaterIntake(Math.floor(toSafeNumber(savedWater)));
     })();
 
-    // Load today's calories from meals
-    const savedMeals = localStorage.getItem(`meals_${today}`);
-    if (savedMeals) {
-      const meals = JSON.parse(savedMeals);
-      const totalCalories = Object.values(meals).reduce(
-        (sum: number, meal: any) => sum + toSafeNumber(meal?.totalCalories),
-        0
-      ) as number;
-      setTodayCalories(Math.floor(toSafeNumber(totalCalories)));
-    }
-
     // Load workout minutes
-    
   }, [navigate]);
 useEffect(() => {
   const reloadDailyData = async () => {
     try {
       const dateId = localDateId().toString();
-      const data = await dailyMetrics.getDailyMetrics(dateId);
+      const dailyData = await dailyMetrics.getDailyMetrics(dateId);
+      const progressData = await dailyMetrics.getProgressMetrics(dateId);
 
-      setWorkoutMinutes(Math.floor(toSafeNumber((data as any)?.workoutMinutes)));
-      setWaterIntake(Math.floor(toSafeNumber((data as any)?.waterGlasses)));
+      const loadedWorkoutMinutes = Math.floor(toSafeNumber((progressData as any)?.workoutMinutes));
+      const loadedCalories = Math.floor(toSafeNumber((progressData as any)?.calorieIntake));
+      setWorkoutMinutes(loadedWorkoutMinutes);
+      setWaterIntake(Math.floor(toSafeNumber((dailyData as any)?.waterGlasses)));
+      setTodayCalories(loadedCalories);
+      localStorage.setItem("home_workout_minutes_latest", loadedWorkoutMinutes.toString());
+      localStorage.setItem("home_calories_latest", loadedCalories.toString());
+      console.debug("AppState", `Calories restored: ${loadedCalories}`);
+      console.debug("AppState", `Workout minutes restored: ${loadedWorkoutMinutes}`);
 
     } catch (e) {
       console.error(e);
@@ -162,6 +183,49 @@ useEffect(() => {
 
   window.addEventListener("focus", reloadDailyData);
   return () => window.removeEventListener("focus", reloadDailyData);
+}, []);
+useEffect(() => {
+  let unsubscribeProgress: (() => void) | null = null;
+  const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+    if (unsubscribeProgress) {
+      unsubscribeProgress();
+      unsubscribeProgress = null;
+    }
+
+    if (!user) {
+      return;
+    }
+
+    const dateId = localDateId().toString();
+    unsubscribeProgress = dailyMetrics.listenToProgress(user.uid, dateId, (data) => {
+      if (!data) {
+        setTodayCalories(0);
+        setWorkoutMinutes(0);
+        console.debug("AppState", "No progress doc found from listener. Using zero values.");
+        return;
+      }
+
+      const firestoreCalories = Math.floor(toSafeNumber(data?.calorieIntake));
+      const firestoreWorkoutMinutes = Math.floor(toSafeNumber(data?.workoutMinutes));
+      setTodayCalories(firestoreCalories);
+      setWorkoutMinutes(firestoreWorkoutMinutes);
+      if (typeof data?.waterGlasses === "number") {
+        setWaterIntake(Math.floor(toSafeNumber(data.waterGlasses)));
+      }
+      if (typeof data?.steps === "number") {
+        setSteps(Math.floor(toSafeNumber(data.steps)));
+      }
+      localStorage.setItem("home_calories_latest", firestoreCalories.toString());
+      localStorage.setItem("home_workout_minutes_latest", firestoreWorkoutMinutes.toString());
+      console.debug("AppState", `Calories restored: ${firestoreCalories}`);
+      console.debug("AppState", `Workout minutes restored: ${firestoreWorkoutMinutes}`);
+    });
+  });
+
+  return () => {
+    if (unsubscribeProgress) unsubscribeProgress();
+    unsubscribeAuth();
+  };
 }, []);
 
   
@@ -189,6 +253,17 @@ useEffect(() => {
   };
 
   const caloriesGoal = calculateCalorieGoal();
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    const dateId = localDateId().toString();
+    dailyMetrics
+      .merge(uid, dateId, {
+        caloriesTarget: Math.max(0, Number(caloriesGoal) || 0),
+        waterGoal: Math.max(1, Number(waterGoal) || 8),
+      })
+      .catch(() => {});
+  }, [caloriesGoal, waterGoal]);
 
   /* -------------------- WATER -------------------- */
   const addWater = () => {
@@ -198,7 +273,7 @@ useEffect(() => {
     localStorage.setItem(`water_${today}`, newIntake.toString());
 
     // Firestore sync (non-blocking)
-    dailyMetrics.setWaterGlasses(newIntake).catch(() => {});
+    dailyMetrics.setWaterGlasses(newIntake, undefined, undefined, waterGoal).catch(() => {});
 
     if (newIntake === waterGoal) {
       toast({
@@ -215,7 +290,7 @@ useEffect(() => {
     localStorage.setItem(`water_${today}`, newIntake.toString());
 
     // Firestore sync (non-blocking)
-    dailyMetrics.setWaterGlasses(newIntake).catch(() => {});
+    dailyMetrics.setWaterGlasses(newIntake, undefined, undefined, waterGoal).catch(() => {});
   };
 
   /* -------------------- CALCULATE CALORIES BURNED FROM STEPS -------------------- */
@@ -236,65 +311,6 @@ useEffect(() => {
     if (hour < 17) return "Good afternoon";
     return "Good evening";
   };
-
-  const handleLogFood = async (food: any, quantity: number) => {
-  const today = new Date().toDateString();
-  const savedMeals = localStorage.getItem(`meals_${today}`);
-  const meals = savedMeals ? JSON.parse(savedMeals) : {};
-
-  const mealType = "Snacks";
-
-  if (!meals[mealType]) {
-    meals[mealType] = { items: [], totalCalories: 0 };
-  }
-
-  const calories = Math.floor(toSafeNumber(food?.calories) * toSafeNumber(quantity));
-
-  meals[mealType].items.push({
-    ...food,
-    quantity,
-    calories,
-  });
-
-  meals[mealType].totalCalories = toSafeNumber(meals?.[mealType]?.totalCalories) + calories;
-
-  localStorage.setItem(`meals_${today}`, JSON.stringify(meals));
-  setTodayCalories(prev => Math.floor(toSafeNumber(prev) + calories));
-
-  // 🔥 FIREBASE SAVE (FIXED)
-  const uid = auth.currentUser?.uid;
-
-  if (uid) {
-    const dateId = localDateId().toString();
-
-    await dailyMetrics.addLoggedFood(
-      {
-        id: Date.now().toString(),
-        mealType,
-        name: String(food?.name ?? "Food"),
-        calories,
-        protein: toSafeNumber(food?.protein),
-        carbs: toSafeNumber(food?.carbs),
-        fat: toSafeNumber(food?.fat),
-        quantity: toSafeNumber(quantity)
-      },
-      {
-        calories,
-        protein: toSafeNumber(food?.protein),
-        carbs: toSafeNumber(food?.carbs),
-        fat: toSafeNumber(food?.fat)
-      },
-      dateId,
-      uid
-    );
-  }
-
-  toast({
-    title: "Food logged!",
-    description: `${String(food?.name ?? "Food")} added to ${mealType}`,
-  });
-};
-
 
   return (
     <div className="mobile-page">
@@ -323,13 +339,13 @@ useEffect(() => {
       {/* Main */}
       <main className="space-y-6">
         {/* Daily Summary Cards */}
-          <div className="grid grid-cols-1 min-[380px]:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 min-[380px]:grid-cols-2 gap-3">
           <div className="mobile-card">
             <div className="flex items-center gap-2 mb-1">
               <Flame className="w-4 h-4 text-accent" />
               <p className="text-xs text-muted-foreground">Calories</p>
             </div>
-            <p className="card-number">{Math.floor(toSafeNumber(todayCalories))}</p>
+            <p className="card-number">{todayCalories === null ? "--" : Math.floor(toSafeNumber(todayCalories))}</p>
             <p className="text-xs text-muted-foreground">/ {caloriesGoal}</p>
           </div>
           <div className="mobile-card">
@@ -381,7 +397,7 @@ useEffect(() => {
               <Clock className="w-4 h-4 text-success" />
               <p className="text-xs text-muted-foreground">Workout</p>
             </div>
-            <p className="card-number">{Math.floor(toSafeNumber(workoutMinutes))}</p>
+            <p className="card-number">{workoutMinutes === null ? "--" : Math.floor(toSafeNumber(workoutMinutes))}</p>
             <p className="text-xs text-muted-foreground">minutes</p>
           </div>
         </div>
@@ -392,40 +408,10 @@ useEffect(() => {
         {/* Quick Actions Grid */}
         <div>
           <h2 className="mobile-title mb-3">Quick Actions</h2>
-          <div className="grid grid-cols-1 min-[380px]:grid-cols-2 gap-3">
-            <button
-              onClick={() => setShowFoodModal(true)}
-              className="bg-card rounded-xl p-4 border hover:border-primary/50 transition-colors text-left"
-            >
-              <div className="w-12 h-12 rounded-xl bg-primary/20 flex items-center justify-center mb-3">
-                <Utensils className="w-6 h-6 text-primary" />
-              </div>
-              <p className="font-semibold">Log Food</p>
-              <p className="text-sm text-muted-foreground">Track your meals</p>
-            </button>
-            <Link
-              to="/workouts"
-              className="bg-card rounded-xl p-4 border hover:border-primary/50 transition-colors text-left"
-            >
-              <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center mb-3">
-                <Dumbbell className="w-6 h-6 text-accent" />
-              </div>
-              <p className="font-semibold">Workouts</p>
-              <p className="text-base text-muted-foreground">Start training</p>
-            </Link>
-            <Link
-              to="/progress"
-              className="bg-card rounded-xl p-4 border hover:border-primary/50 transition-colors text-left"
-            >
-              <div className="w-12 h-12 rounded-xl bg-success/20 flex items-center justify-center mb-3">
-                <TrendingUp className="w-6 h-6 text-success" />
-              </div>
-              <p className="font-semibold">Progress</p>
-              <p className="text-base text-muted-foreground">View analytics</p>
-            </Link>
+          <div>
             <Link
               to="/steps"
-              className="bg-card rounded-xl p-4 border hover:border-primary/50 transition-colors text-left"
+              className="mobile-card block hover:border-primary/50 transition-colors"
             >
               <div className="w-12 h-12 rounded-xl bg-primary/20 flex items-center justify-center mb-3">
                 <Footprints className="w-6 h-6 text-primary" />
@@ -453,14 +439,6 @@ useEffect(() => {
 
       {/* Bottom Navigation */}
       <BottomNavigation />
-
-      {/* Log Food Modal */}
-      <LogFoodModal
-        isOpen={showFoodModal}
-        onClose={() => setShowFoodModal(false)}
-        mealType="Snacks"
-        onLogFood={handleLogFood}
-      />
     </div>
   );
 };

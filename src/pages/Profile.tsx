@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 
 import { signOut } from "firebase/auth";
-import { auth } from "@/firebase";
+import { auth, db } from "@/firebase";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
+import { doc, getDoc } from "firebase/firestore";
 import { 
-  ArrowLeft, 
   User, 
   Weight, 
   Ruler, 
@@ -13,12 +13,10 @@ import {
   Clock, 
   Target,
   Utensils,
-  Edit3,
   ChevronRight,
   LogOut,
   Settings,
-  Bell,
-  Shield
+  Bell
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import BottomNavigation from "@/components/BottomNavigation";
@@ -39,13 +37,55 @@ const Profile = () => {
   const navigate = useNavigate();
   const {toast} = useToast();
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const savedProfile = localStorage.getItem("userProfile");
-    if (savedProfile) {
-      setProfile(JSON.parse(savedProfile));
-    }
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const snap = await getDoc(doc(db, "users", user.uid));
+        if (!snap.exists()) {
+          const savedProfile = localStorage.getItem("userProfile");
+          if (savedProfile) {
+            setProfile(JSON.parse(savedProfile));
+          }
+          setLoading(false);
+          return;
+        }
+
+        const data = snap.data() as any;
+        setProfile({
+          name: String(data?.name ?? ""),
+          weight: String(data?.weight ?? ""),
+          height: String(data?.height ?? ""),
+          age: String(data?.age ?? ""),
+          weeklyHours: String(data?.weeklyHours ?? ""),
+          hasHecticSchedule: Boolean(data?.hasHecticSchedule ?? false),
+          goal: String(data?.goal ?? ""),
+          dietType: String(data?.dietType ?? ""),
+        });
+      } catch (error) {
+        const savedProfile = localStorage.getItem("userProfile");
+        if (savedProfile) {
+          setProfile(JSON.parse(savedProfile));
+        }
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!loading && !profile) {
+      navigate("/onboarding", { replace: true });
+    }
+  }, [loading, profile, navigate]);
 
   const getGoalLabel = (goal: string) => {
     const goals: Record<string, string> = {
@@ -99,11 +139,10 @@ const Profile = () => {
     { icon: Target, label: "Fitness Goal", value: getGoalLabel(profile.goal) },
     { icon: Utensils, label: "Diet Preference", value: getDietLabel(profile.dietType) },
     { icon: Bell, label: "Notifications", value: "Enabled" },
-    { icon: Shield, label: "Privacy", value: "" },
-    { icon: Settings, label: "Settings", value: "" },
+    { icon: Settings, label: "Settings", value: "", route: "/settings" },
   ] : [];
 
-  if (!profile) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center overflow-y-auto">
         <div className="text-center">
@@ -112,6 +151,8 @@ const Profile = () => {
       </div>
     );
   }
+
+  if (!profile) return null;
 
   return (
     <div className="mobile-page">
@@ -122,26 +163,15 @@ const Profile = () => {
 
       {/* Header */}
       <header className="relative z-10 mobile-header">
-        <div className="flex items-center justify-between">
-          
-          <Button variant="ghost" size="icon" onClick={() => navigate("/onboarding")}>
-            <Edit3 className="w-5 h-5" />
-          </Button>
-        </div>
+        <div className="flex items-center justify-between" />
       </header>
 
       {/* Profile Header */}
       <div className="relative z-10 text-center mb-8 animate-slide-up">
-        <div className="relative inline-block">
+        <div className="inline-block">
           <div className="w-28 h-28 rounded-full bg-primary flex items-center justify-center shadow-[0_0_40px_hsl(var(--primary)/0.3)] mx-auto">
             <User className="w-14 h-14 text-primary-foreground" />
           </div>
-          <button 
-            onClick={() => navigate("/onboarding")}
-            className="absolute bottom-0 right-0 w-10 h-10 rounded-full bg-accent flex items-center justify-center shadow-[0_4px_20px_hsl(var(--accent)/0.4)]"
-          >
-            <Edit3 className="w-5 h-5 text-accent-foreground" />
-          </button>
         </div>
         <h1 className="mobile-title text-foreground mt-4">{profile.name}</h1>
         <p className="text-sm text-muted-foreground">{profile.hasHecticSchedule ? "Hectic Schedule" : "Regular Schedule"}</p>
@@ -181,7 +211,6 @@ const Profile = () => {
               </p>
             </div>
           </div>
-          <ChevronRight className="w-5 h-5 text-muted-foreground" />
         </div>
       </div>
 
@@ -191,13 +220,10 @@ const Profile = () => {
         {menuItems.map((item) => (
           <button
             key={item.label}
-            onClick={() => {
-              if (item.label === "Settings") {
-                navigate("/settings");
-              }
-              // Other menu items can be handled here
-            }}
-            className="w-full bg-card rounded-2xl p-5 shadow-sm border border-border/50 flex items-center justify-between hover:bg-secondary/50 transition-colors"
+            onClick={item.route ? () => navigate(item.route) : undefined}
+            className={`w-full bg-card rounded-2xl p-5 shadow-sm border border-border/50 flex items-center justify-between transition-colors ${
+              item.route ? "hover:bg-secondary/50" : ""
+            }`}
           >
             <div className="flex items-center gap-4">
               <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center">
@@ -208,7 +234,7 @@ const Profile = () => {
                 {item.value && <p className="text-sm text-muted-foreground">{item.value}</p>}
               </div>
             </div>
-            <ChevronRight className="w-5 h-5 text-muted-foreground" />
+            {item.route && <ChevronRight className="w-5 h-5 text-muted-foreground" />}
           </button>
         ))}
       </div>

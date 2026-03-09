@@ -3,6 +3,11 @@ import { registerPlugin } from "@capacitor/core";
 /* 1️⃣ Define plugin interface */
 export interface StepPluginType {
   getSteps(): Promise<{ steps: number }>;
+  syncReminders(options: {
+    notificationsEnabled: boolean;
+    reminders: Array<{ id: string; enabled: boolean; time: string }>;
+    workoutReminder: { enabled: boolean; time: string };
+  }): Promise<{ ok: boolean }>;
 }
 
 /* 2️⃣ Register plugin with type */
@@ -18,6 +23,22 @@ export const getNativeSteps = async () => {
   } catch (e) {
     console.log("Native steps error:", e);
     return 0;
+  }
+};
+
+export const syncNativeReminders = async (
+  notificationsEnabled: boolean,
+  reminders: Array<{ id: string; enabled: boolean; time: string }>,
+  workoutReminder: { enabled: boolean; time: string }
+) => {
+  try {
+    await StepPlugin.syncReminders({
+      notificationsEnabled,
+      reminders,
+      workoutReminder,
+    });
+  } catch (e) {
+    console.warn("Native reminder sync error:", e);
   }
 };
 

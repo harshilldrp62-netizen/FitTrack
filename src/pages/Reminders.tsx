@@ -2,9 +2,11 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, Bell, Clock } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import { Input } from "@/components/ui/input";
 import BottomNavigation from "@/components/BottomNavigation";
 import { useToast } from "@/hooks/use-toast";
+import { Capacitor } from "@capacitor/core";
+import { LocalNotifications } from "@capacitor/local-notifications";
+import { syncNativeReminders } from "@/services/NativeStepService";
 
 interface Reminder {
   id: string;
@@ -20,7 +22,6 @@ const Reminders = () => {
     { id: "breakfast", label: "Breakfast", enabled: false, time: "08:00" },
     { id: "lunch", label: "Lunch", enabled: false, time: "12:30" },
     { id: "dinner", label: "Dinner", enabled: false, time: "19:00" },
-    { id: "water", label: "Water Reminder", enabled: false, time: "10:00" },
   ]);
   const [customWorkoutTime, setCustomWorkoutTime] = useState("18:00");
   const [customWorkoutEnabled, setCustomWorkoutEnabled] = useState(false);
@@ -29,7 +30,8 @@ const Reminders = () => {
     // Load saved reminders
     const savedReminders = localStorage.getItem("reminders");
     if (savedReminders) {
-      setReminders(JSON.parse(savedReminders));
+      const parsed = JSON.parse(savedReminders) as Reminder[];
+      setReminders(parsed.filter((item) => item.id !== "water"));
     }
 
     const savedCustomWorkout = localStorage.getItem("customWorkoutReminder");
@@ -40,28 +42,85 @@ const Reminders = () => {
     }
 
     // Check notification permission
-    if ("Notification" in window) {
-      setNotificationsEnabled(Notification.permission === "granted");
-    }
+    const checkPermissions = async () => {
+      try {
+        if (Capacitor.isNativePlatform()) {
+          const perms = await LocalNotifications.checkPermissions();
+          setNotificationsEnabled(perms.display === "granted");
+          return;
+        }
+      } catch {
+        // fall back to browser
+      }
+
+      if ("Notification" in window) {
+        setNotificationsEnabled(Notification.permission === "granted");
+      }
+    };
+
+    checkPermissions();
   }, []);
 
   const requestNotificationPermission = async () => {
+    try {
+      if (Capacitor.isNativePlatform()) {
+        const permission = await LocalNotifications.requestPermissions();
+        const granted = permission.display === "granted";
+        setNotificationsEnabled(granted);
+
+        if (granted) {
+          await LocalNotifications.createChannel({
+            id: "fitness_reminders",
+            name: "Fitness Reminders",
+            importance: 5,
+          });
+        }
+
+        toast({
+          title: granted ? "Notifications enabled!" : "Notifications blocked",
+          description: granted
+            ? "You'll receive reminders for enabled items."
+            : "Please enable notification permission in device settings.",
+          variant: granted ? "default" : "destructive",
+        });
+        return;
+      }
+    } catch {
+      // fall back to browser
+    }
+
     if ("Notification" in window && Notification.permission === "default") {
       const permission = await Notification.requestPermission();
-      setNotificationsEnabled(permission === "granted");
-      
-      if (permission === "granted") {
-        toast({
-          title: "Notifications enabled!",
-          description: "You'll receive reminders for enabled items.",
-        });
-      } else {
-        toast({
-          title: "Notifications blocked",
-          description: "Please enable notifications in your browser settings.",
-          variant: "destructive",
-        });
-      }
+      const granted = permission === "granted";
+      setNotificationsEnabled(granted);
+
+      toast({
+        title: granted ? "Notifications enabled!" : "Notifications blocked",
+        description: granted
+          ? "You'll receive reminders for enabled items."
+          : "Please enable notifications in your browser settings.",
+        variant: granted ? "default" : "destructive",
+      });
+    }
+  };
+
+  const syncNativeSchedules = async (
+    nextReminders: Reminder[],
+    workoutEnabled: boolean,
+    workoutTime: string
+  ) => {
+    if (!Capacitor.isNativePlatform()) return;
+
+    try {
+      const enabledRaw = localStorage.getItem("notificationsEnabled");
+      const notificationsEnabled = enabledRaw === null ? true : enabledRaw === "true";
+      await syncNativeReminders(
+        notificationsEnabled,
+        nextReminders,
+        workoutEnabled ? { enabled: true, time: workoutTime } : { enabled: false, time: workoutTime }
+      );
+    } catch (err) {
+      console.warn("Reminder schedule sync failed:", err);
     }
   };
 
@@ -110,6 +169,10 @@ const Reminders = () => {
       ? [{ id: "custom-workout", label: "Workout", time: customWorkoutTime }]
       : []),
   ];
+
+  useEffect(() => {
+    syncNativeSchedules(reminders, customWorkoutEnabled, customWorkoutTime);
+  }, [reminders, customWorkoutEnabled, customWorkoutTime]);
 
   return (
     <div className="mobile-page">

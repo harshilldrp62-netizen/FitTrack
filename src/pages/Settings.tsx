@@ -1,67 +1,73 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft, Moon, Sun, Bell, Scale, FileText, Info } from "lucide-react";
+import { ArrowLeft, Bell, FileText, Info } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import BottomNavigation from "@/components/BottomNavigation";
 import { useToast } from "@/hooks/use-toast";
+import { Capacitor } from "@capacitor/core";
+import { LocalNotifications } from "@capacitor/local-notifications";
+import { syncNativeReminders } from "@/services/NativeStepService";
 
 const Settings = () => {
+  const FEEDBACK_EMAIL = "harshilldrp62@gmail.com";
   const { toast } = useToast();
-  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [notifications, setNotifications] = useState(true);
-  const [unit, setUnit] = useState<"kg" | "lbs">("kg");
   const [feedback, setFeedback] = useState("");
 
   useEffect(() => {
-    // Load saved settings
-    const savedTheme = localStorage.getItem("theme");
-    if (savedTheme) {
-      setTheme(savedTheme as "light" | "dark");
-      document.documentElement.setAttribute("data-theme", savedTheme);
-    }
-
     const savedNotifications = localStorage.getItem("notificationsEnabled");
     if (savedNotifications !== null) {
       setNotifications(savedNotifications === "true");
     }
-
-    const savedUnit = localStorage.getItem("unitPreference");
-    if (savedUnit) {
-      setUnit(savedUnit as "kg" | "lbs");
-    }
   }, []);
 
-  const toggleTheme = () => {
-    const newTheme = theme === "light" ? "dark" : "light";
-    setTheme(newTheme);
-    localStorage.setItem("theme", newTheme);
-    document.documentElement.setAttribute("data-theme", newTheme);
+  const syncLocalSchedules = async (enabled: boolean) => {
+    if (!Capacitor.isNativePlatform()) return;
+
+    type Reminder = { id: string; enabled: boolean; time: string };
+    const rawReminders = localStorage.getItem("reminders");
+    const reminders: Reminder[] = rawReminders ? JSON.parse(rawReminders) : [];
+
+    const rawWorkout = localStorage.getItem("customWorkoutReminder");
+    const workout = rawWorkout ? JSON.parse(rawWorkout) : null;
+    await syncNativeReminders(
+      enabled,
+      reminders,
+      workout?.enabled && typeof workout.time === "string"
+        ? { enabled: true, time: workout.time }
+        : { enabled: false, time: "18:00" }
+    );
+  };
+
+  const toggleNotifications = async (checked: boolean) => {
+    setNotifications(checked);
+    localStorage.setItem("notificationsEnabled", checked.toString());
+
+    if (checked && Capacitor.isNativePlatform()) {
+      const permission = await LocalNotifications.requestPermissions();
+      if (permission.display !== "granted") {
+        setNotifications(false);
+        localStorage.setItem("notificationsEnabled", "false");
+        toast({
+          title: "Notifications disabled",
+          description: "Permission was not granted.",
+        });
+        return;
+      }
+    }
+
+    await syncLocalSchedules(checked);
     toast({
-      title: "Theme updated",
-      description: `Switched to ${newTheme} mode`,
+      title: checked ? "Notifications enabled" : "Notifications disabled",
+      description: checked ? "Reminders are active." : "All reminders were turned off.",
     });
   };
 
-  const toggleNotifications = () => {
-    const newState = !notifications;
-    setNotifications(newState);
-    localStorage.setItem("notificationsEnabled", newState.toString());
-  };
-
-  const toggleUnit = () => {
-    const newUnit = unit === "kg" ? "lbs" : "kg";
-    setUnit(newUnit);
-    localStorage.setItem("unitPreference", newUnit);
-    toast({
-      title: "Unit preference updated",
-      description: `Switched to ${newUnit}`,
-    });
-  };
-
-  const handleSubmitFeedback = () => {
-    if (!feedback.trim()) {
+  const handleSubmitFeedback = async () => {
+    const feedbackMessage = feedback.trim();
+    if (!feedbackMessage) {
       toast({
         title: "Feedback required",
         description: "Please enter your feedback before submitting.",
@@ -70,14 +76,21 @@ const Settings = () => {
       return;
     }
 
-    // In a real app, this would send to backend
-    console.log("Feedback submitted:", feedback);
-    localStorage.setItem("feedback", feedback);
-    setFeedback("");
-    toast({
-      title: "Thank you!",
-      description: "Your feedback has been submitted.",
-    });
+    try {
+      const subject = encodeURIComponent("FitTrack App Feedback");
+      const body = encodeURIComponent(feedbackMessage);
+      const mailto = `mailto:${FEEDBACK_EMAIL}?subject=${subject}&body=${body}`;
+      window.location.href = mailto;
+
+      setFeedback("");
+    } catch (error) {
+      console.error("Feedback submission failed:", error);
+      toast({
+        title: "Failed to send feedback",
+        description: "No email application found.",
+        variant: "destructive",
+      });
+    }
   };
 
   return (
@@ -102,26 +115,6 @@ const Settings = () => {
 
       {/* Main Content */}
       <main className="space-y-6">
-        {/* Theme Toggle */}
-        <div className="bg-card rounded-2xl p-5 shadow-sm border">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              {theme === "light" ? (
-                <Sun className="w-5 h-5 text-warning" />
-              ) : (
-                <Moon className="w-5 h-5 text-primary" />
-              )}
-              <div>
-                <p className="font-medium">Theme</p>
-                <p className="text-base text-muted-foreground">
-                  {theme === "light" ? "Light mode" : "Dark mode"}
-                </p>
-              </div>
-            </div>
-            <Switch checked={theme === "dark"} onCheckedChange={toggleTheme} />
-          </div>
-        </div>
-
         {/* Notification Preferences */}
         <div className="bg-card rounded-2xl p-5 shadow-sm border">
           <div className="flex items-center justify-between">
@@ -141,22 +134,6 @@ const Settings = () => {
           </div>
         </div>
 
-        {/* Unit Preferences */}
-        <div className="bg-card rounded-2xl p-5 shadow-sm border">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Scale className="w-5 h-5 text-accent" />
-              <div>
-                <p className="font-medium">Weight Unit</p>
-                <p className="text-base text-muted-foreground">
-                  Current: {unit.toUpperCase()}
-                </p>
-              </div>
-            </div>
-            <Switch checked={unit === "lbs"} onCheckedChange={toggleUnit} />
-          </div>
-        </div>
-
         {/* Feedback Form */}
         <div className="bg-card rounded-xl p-4 border">
           <div className="flex items-center gap-3 mb-4">
@@ -170,7 +147,7 @@ const Settings = () => {
             className="min-h-[120px] mb-4"
           />
           <Button onClick={handleSubmitFeedback} className="w-full">
-            Submit Feedback
+            Send Feedback
           </Button>
         </div>
 
@@ -181,14 +158,12 @@ const Settings = () => {
             <h2 className="text-lg font-semibold">About</h2>
           </div>
           <div className="space-y-2 text-base text-muted-foreground">
-            <p>FitTrack v1.0.0</p>
-            <p>Your personal fitness companion</p>
-            <Link
-              to="/privacy"
-              className="text-primary hover:underline block mt-4"
-            >
-              Privacy Policy
-            </Link>
+            <p>
+              FitTrack is a personal fitness and nutrition tracking application designed to help users maintain a
+              healthy lifestyle. The app allows users to monitor their workouts, track calorie intake, record daily
+              water consumption, and measure overall progress. FitTrack encourages consistency through streak tracking
+              and provides a simple way to stay accountable to daily fitness goals.
+            </p>
           </div>
         </div>
       </main>

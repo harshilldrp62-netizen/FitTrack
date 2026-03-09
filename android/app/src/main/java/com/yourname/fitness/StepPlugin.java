@@ -6,6 +6,7 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.util.Log;
 
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -48,5 +49,29 @@ public class StepPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("steps", steps);
         call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void syncReminders(PluginCall call) {
+        try {
+            boolean notificationsEnabled = call.getBoolean("notificationsEnabled", true);
+            JSArray reminders = call.getArray("reminders");
+            JSObject workoutReminder = call.getObject("workoutReminder");
+
+            ReminderScheduler.saveReminderState(
+                getContext(),
+                notificationsEnabled,
+                reminders,
+                workoutReminder
+            );
+            ReminderScheduler.rescheduleFromPreferences(getContext());
+
+            JSObject ret = new JSObject();
+            ret.put("ok", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            Log.e(TAG, "syncReminders failed", e);
+            call.reject("Failed to sync reminders", e);
+        }
     }
 }
